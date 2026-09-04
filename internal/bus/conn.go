@@ -217,6 +217,24 @@ func (c *Conn) dispatch(ctx context.Context, env *busv1.Envelope) {
 	go c.onOpen(s, env)
 }
 
+// CloseWith shuts the underlying websocket down with an explicit status. It
+// does not block the caller: Close performs a close handshake that can take
+// several seconds waiting for the peer's acknowledgement, and a caller
+// replacing this connection with a new one (handleConnect, on a second
+// connection for the same agent id) must not stall on it. The blocked Read in
+// this connection's own Run notices the close and returns on its own.
+//
+// ponytail: fire-and-forget close, not joined with this connection's own Run
+// since CloseWith is called from a different connection's goroutine; add a
+// done channel if a caller ever needs to know the handshake finished.
+func (c *Conn) CloseWith(code websocket.StatusCode, reason string) {
+	go func() {
+		if err := c.ws.Close(code, reason); err != nil {
+			slog.Debug("close handshake", "reason", reason, "err", err)
+		}
+	}()
+}
+
 func opensStream(env *busv1.Envelope) bool {
 	switch env.GetPayload().(type) {
 	case *busv1.Envelope_RpcOpen, *busv1.Envelope_HttpOpen:
