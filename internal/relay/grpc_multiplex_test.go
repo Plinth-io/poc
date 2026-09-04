@@ -76,8 +76,13 @@ func TestFiftyConcurrentStreamsStayIndependent(t *testing.T) {
 // small call lands well under 15ms (the first one, racing the large call's
 // own first chunks, is the slowest observed at ~12ms); this bound leaves a
 // large margin over that noise while staying an order of magnitude under
-// callTimeout, so a design that serializes large and small traffic instead of
-// interleaving their chunks has no way to sneak under it.
+// callTimeout.
+//
+// ponytail: catches gross regressions (multi-second stalls, deadlocks) but
+// not fine-grained starvation — measured, a fully serialized, unchunked 2 MiB
+// write still finishes in ~17.5ms on this loopback transport, well under this
+// bound. Telling interleaved from monolithic apart would need injected
+// write-path delay or real network latency, neither of which fits here.
 const smallCallBound = 500 * time.Millisecond
 
 // TestConcurrentLargeAndSmallCallsDoNotStarveEachOther proves that a call
