@@ -8,6 +8,12 @@ denselben Kanal erreichbar.
 
     make demo
 
+Das baut und startet alle drei Prozesse mit den Tokens aus dem Makefile.
+Wer `hub` und `agent` stattdessen direkt startet, braucht `HUB_TOKENS`
+(Format `id:token,id:token`, z.B. `mac-1:secret1`) beim Hub und den
+passenden `AGENT_TOKEN` beim Agent — ohne `HUB_TOKENS` beendet sich der Hub
+sofort mit `HUB_TOKENS is empty`.
+
 Danach:
 
 - Hub-UI mit Agent-Liste und Envelope-Inspektor: <http://127.0.0.1:7001/>
@@ -31,9 +37,10 @@ Design und bewusste Auslassungen:
 ## Grenzen
 
 Die Aufrufer-Seite ist nicht authentifiziert: wer den Hub erreicht,
-erreicht jeden verbundenen Agent. Beide Hub-Listener binden deshalb auf
-`127.0.0.1`. Vor jedem Betrieb auf einer öffentlichen Adresse muss zuerst
-eine Authentifizierung der Aufrufer dazu.
+erreicht jeden verbundenen Agent. Beide Hub-Listener binden deshalb per
+Default auf `127.0.0.1` (überschreibbar über `-grpc-addr`/`-http-addr`).
+Vor jedem Betrieb auf einer öffentlichen Adresse muss zuerst eine
+Authentifizierung der Aufrufer hinzukommen.
 
 Der HTTP-Relay-Handler wartet auf das Ende des Anfragekörpers, bevor er
 zurückkehrt. Der Hub setzt dafür zwar `ReadTimeout`/`ReadHeaderTimeout` auf

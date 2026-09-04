@@ -9,9 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"plinth.io/poc/internal/agent"
 )
+
+// readHeaderTimeout guards against slow-header clients, the same as the
+// hub's listener. This UI has no request-body pump to hold open, so unlike
+// the hub it needs no ReadTimeout beyond that.
+const readHeaderTimeout = 5 * time.Second
 
 func main() {
 	hubURL := flag.String("hub", "ws://127.0.0.1:7001/agent/connect", "hub websocket endpoint")
@@ -36,8 +42,13 @@ func main() {
 	// The agent serves its own UI and relays it back through its own tunnel,
 	// which shows that the bus knows nothing about its targets.
 	go func() {
+		srv := &http.Server{
+			Addr:              *uiAddr,
+			Handler:           a.UIHandler(logs),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
 		slog.Info("agent UI listening", "addr", *uiAddr)
-		if err := http.ListenAndServe(*uiAddr, a.UIHandler(logs)); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			slog.Error("agent ui", "err", err)
 		}
 	}()

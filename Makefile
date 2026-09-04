@@ -7,8 +7,9 @@ test:
 	go test -race ./...
 
 demo:
+	@go build -o bin/ ./cmd/demo-service ./cmd/hub ./cmd/agent
 	@echo "drei Prozesse starten, mit Ctrl-C beenden"
-	@go run ./cmd/demo-service & \
-	 HUB_TOKENS=mac-1:secret1 go run ./cmd/hub & \
-	 sleep 2; AGENT_TOKEN=secret1 go run ./cmd/agent & \
+	@./bin/demo-service & \
+	 HUB_TOKENS=mac-1:secret1 ./bin/hub & \
+	 sleep 2; AGENT_TOKEN=secret1 ./bin/agent & \
 	 wait

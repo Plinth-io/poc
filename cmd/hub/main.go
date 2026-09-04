@@ -30,7 +30,8 @@ func main() {
 	flag.Parse()
 
 	// Callers are not authenticated, so both listeners stay on the loopback
-	// interface. Opening them to the network requires caller auth first.
+	// interface by default. Opening them to the network requires caller
+	// auth first.
 	tokens, err := hub.ParseTokens(os.Getenv("HUB_TOKENS"))
 	if err != nil {
 		slog.Error("HUB_TOKENS", "err", err)
