@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"google.golang.org/grpc"
@@ -21,6 +22,13 @@ import (
 	"plinth.io/poc/internal/relay"
 )
 
+const (
+	defaultMinBackoff = 500 * time.Millisecond
+	defaultMaxBackoff = 30 * time.Second
+	pingInterval      = 15 * time.Second
+	pingTimeout       = 30 * time.Second
+)
+
 type Config struct {
 	HubURL     string // ws://127.0.0.1:7001/agent/connect
 	Token      string
@@ -28,6 +36,11 @@ type Config struct {
 	Version    string
 	GRPCTarget string // 127.0.0.1:50052
 	HTTPTarget string // http://127.0.0.1:8090
+
+	// MinBackoff and MaxBackoff bound the delay between reconnect attempts.
+	// Zero picks defaultMinBackoff/defaultMaxBackoff.
+	MinBackoff time.Duration
+	MaxBackoff time.Duration
 }
 
 type Agent struct {
@@ -83,7 +96,71 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	conn := bus.NewConn(ws, bus.SideAgent, a.onOpen)
 	a.setConn(ctx, conn)
 	slog.Info("connected to hub", "agent_id", a.cfg.AgentID)
+
+	pingCtx, stopPing := context.WithCancel(ctx)
+	defer stopPing()
+	go a.keepalive(pingCtx, ws, conn)
+
 	return conn.Run(ctx)
+}
+
+// Run keeps a connection to the hub alive until ctx ends. Streams do not
+// survive a drop: the calls in flight fail and the next one uses the fresh
+// connection.
+func (a *Agent) Run(ctx context.Context) error {
+	b := backoff{min: a.cfg.MinBackoff, max: a.cfg.MaxBackoff}
+	if b.min <= 0 {
+		b.min = defaultMinBackoff
+	}
+	if b.max < b.min {
+		b.max = defaultMaxBackoff
+	}
+
+	var delay time.Duration
+	for {
+		start := time.Now()
+		err := a.ConnectOnce(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Since(start) > b.max {
+			delay = 0
+		} else {
+			delay = b.next(delay)
+		}
+		slog.Warn("connection to hub ended, retrying", "err", err, "in", delay)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+// keepalive detects a silently dead connection. coder/websocket's Ping blocks
+// until the pong arrives, so a timeout is all the liveness check needs. A
+// failed ping tears the connection down through conn.CloseWith rather than
+// closing ws directly: from bus.NewConn onward the Conn is the socket's only
+// closer, and a second closer here would reintroduce the CAS race CloseWith
+// exists to avoid.
+func (a *Agent) keepalive(ctx context.Context, ws *websocket.Conn, conn *bus.Conn) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := ws.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				conn.CloseWith(websocket.StatusNormalClosure, "keepalive: no pong")
+				return
+			}
+		}
+	}
 }
 
 func (a *Agent) targets() []string {
