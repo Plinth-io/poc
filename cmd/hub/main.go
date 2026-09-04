@@ -32,6 +32,10 @@ func main() {
 	// Callers are not authenticated, so both listeners stay on the loopback
 	// interface by default. Opening them to the network requires caller
 	// auth first.
+	//
+	// ponytail: whoever reaches the hub reaches every connected agent. The
+	// loopback default is the whole containment; caller auth is the upgrade,
+	// and it is a precondition for a public address, not an improvement.
 	tokens, err := hub.ParseTokens(os.Getenv("HUB_TOKENS"))
 	if err != nil {
 		slog.Error("HUB_TOKENS", "err", err)

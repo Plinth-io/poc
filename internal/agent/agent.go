@@ -68,6 +68,11 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+a.cfg.Token)
 
+	// ponytail: no TLS. HubURL is whatever the -hub flag says, and against a
+	// ws:// hub this token travels in the clear along with everything else.
+	// The upgrade is a wss:// URL, which needs no code change here — it is
+	// required the moment the hub is not localhost.
+
 	ws, _, err := websocket.Dial(ctx, a.cfg.HubURL, &websocket.DialOptions{
 		HTTPHeader:      header,
 		CompressionMode: websocket.CompressionDisabled,
@@ -116,6 +121,10 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 // Run keeps a connection to the hub alive until ctx ends. Streams do not
 // survive a drop: the calls in flight fail and the next one uses the fresh
 // connection.
+//
+// ponytail: no stream resumption, so a long transfer restarts from the top
+// after an outage. Buffering plus sequence numbers on both sides is the
+// upgrade, once streams have to outlive their connection.
 func (a *Agent) Run(ctx context.Context) error {
 	b := backoff{min: a.cfg.MinBackoff, max: a.cfg.MaxBackoff}
 	if b.min <= 0 {

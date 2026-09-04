@@ -33,6 +33,10 @@ var ErrConnClosed = errors.New("bus: connection closed")
 
 // OpenFunc handles an envelope that opens a new stream. It runs on its own
 // goroutine and owns the stream from then on.
+//
+// ponytail: gRPC and HTTP are the only two users of the bus today. A third
+// one is a new payload in the envelope oneof plus its own OpenFunc branch —
+// the bus itself needs no change for it.
 type OpenFunc func(*Stream, *busv1.Envelope)
 
 // Conn multiplexes many logical streams over one websocket. It knows nothing

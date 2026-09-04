@@ -15,6 +15,11 @@ func TestMain(m *testing.M) {
 		// these winding down at the TestMain boundary.
 		goleak.IgnoreTopFunction("google.golang.org/grpc/internal/transport.(*http2Client).keepalive"),
 		goleak.IgnoreTopFunction("google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run"),
+		// http.DefaultTransport keeps idle connections alive by design, and
+		// the agent's tunnelled HTTP client uses it. These two live as long
+		// as the pool does, so they are pool bookkeeping rather than leaked
+		// work — at the cost that a genuinely leaked connection of the same
+		// shape would hide here too.
 		goleak.IgnoreAnyFunction("net/http.(*persistConn).readLoop"),
 		goleak.IgnoreAnyFunction("net/http.(*persistConn).writeLoop"),
 	)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"html/template"
@@ -39,6 +40,9 @@ func (a *Agent) Status() Status {
 func (a *Agent) UIHandler(logs *LogBuffer) http.Handler {
 	mux := http.NewServeMux()
 
+	// Rendered into a buffer before anything reaches w, the same as the hub's
+	// index: executing straight into the ResponseWriter turns a mid-render
+	// failure into a truncated 200 plus a pointless http.Error after it.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		st := a.Status()
 		// Since shadows the embedded Status.Since (a time.Time), so
@@ -54,10 +58,14 @@ func (a *Agent) UIHandler(logs *LogBuffer) http.Handler {
 			Since:  st.Since.Format(time.RFC3339),
 			Lines:  logs.Lines(),
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := uiTmpl.Execute(w, data); err != nil {
+		var buf bytes.Buffer
+		if err := uiTmpl.Execute(&buf, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(buf.Bytes())
 	})
 
 	mux.HandleFunc("GET /logs/stream", func(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,10 @@ var ErrMessageTooLarge = errors.New("bus: message exceeds 4 MiB")
 
 // Chunks splits a payload into pieces of at most MaxChunk bytes. An empty
 // payload yields one empty chunk, so a zero-length gRPC message still travels.
+//
+// The returned slices alias b — nothing is copied. Since Conn.Send only queues
+// an envelope for the writer goroutine, the caller must not reuse or overwrite
+// b until the chunks built from it have been sent.
 func Chunks(b []byte) [][]byte {
 	if len(b) == 0 {
 		return [][]byte{{}}

@@ -223,3 +223,68 @@ func TestAgentDisconnectStopsAStalledBidiCall(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestACallSucceedsOverTheReconnectedConnection covers the last clause of the
+// spec's reconnect case (§11.5), the one the other disconnect tests stop
+// short of: a running stream ends with UNAVAILABLE, the agent comes back on
+// its own, and the next call goes through the connection that replaced the
+// dead one. Everything else here runs on a single connection, so nothing
+// otherwise proves a second-generation one carries calls at all.
+func TestACallSucceedsOverTheReconnectedConnection(t *testing.T) {
+	env := testenv.StartReconnecting(t)
+	client := demov1.NewDemoClient(env.Dial(t))
+
+	stream, err := client.Tail(tunnelCtx(t, env), &demov1.TailRequest{Lines: 1 << 20})
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+
+	first, ok := env.Hub.Agents().Get(env.AgentID)
+	if !ok {
+		t.Fatal("agent not registered")
+	}
+	first.Conn.CloseWith(1000, "test tears the tunnel down")
+
+	for {
+		if _, err := stream.Recv(); err != nil {
+			if status.Code(err) != codes.Unavailable {
+				t.Fatalf("Code = %v, want %v", status.Code(err), codes.Unavailable)
+			}
+			break
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if ag, ok := env.Hub.Agents().Get(env.AgentID); ok && ag != first {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("agent never came back after the connection was dropped")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	got, err := client.Echo(tunnelCtx(t, env), &demov1.EchoRequest{Text: "nach dem reconnect"})
+	if err != nil {
+		t.Fatalf("Echo over the reconnected tunnel: %v", err)
+	}
+	if got.GetText() != "nach dem reconnect" {
+		t.Fatalf("Text = %q", got.GetText())
+	}
+
+	// demo.TailActive is process-global, and two later tests require it at 0
+	// on entry. Bounded well below callTimeout: the dropped Tail's own
+	// deadline would end it eventually anyway, which would mask a leak.
+	const cleanupBound = 1 * time.Second
+	deadline = time.Now().Add(cleanupBound)
+	for demo.TailActive.Load() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the dropped Tail is still running on the agent")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

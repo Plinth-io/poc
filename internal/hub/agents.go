@@ -35,6 +35,10 @@ func (a *Agent) LastPong() time.Time {
 }
 
 // Agents holds the live agent connections.
+//
+// ponytail: process memory, so a second hub instance would have its own
+// registry and know nothing of the agents on the first. A shared store plus
+// forwarding between instances is the upgrade, once the hub scales out.
 type Agents struct {
 	mu sync.RWMutex
 	m  map[string]*Agent

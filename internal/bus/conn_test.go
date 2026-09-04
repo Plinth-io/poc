@@ -13,6 +13,11 @@ import (
 	"plinth.io/poc/internal/bus"
 )
 
+// This package deliberately has no goleak TestMain, unlike agent, hub and
+// relay: startClose finishes the websocket close handshake on a detached
+// goroutine on purpose, so a leak check here would race that goroutine and
+// fail at random rather than catch anything.
+
 // pair starts a websocket server and returns a connected hub/agent pair.
 func pair(t *testing.T, onAgentOpen bus.OpenFunc) (*bus.Conn, *bus.Conn) {
 	t.Helper()

@@ -49,8 +49,16 @@ var cancelSeen atomic.Bool
 // request context cancelled since the last Start.
 func (e *Env) CancelObserved() bool { return cancelSeen.Load() }
 
-// Start brings the whole chain up and tears it down with the test.
-func Start(t *testing.T) *Env {
+// Start brings the whole chain up and tears it down with the test. Its agent
+// holds exactly one connection: a failed dial, auth or hello surfaces as
+// itself instead of disappearing into a retry loop.
+func Start(t *testing.T) *Env { return start(t, false) }
+
+// StartReconnecting is Start with an agent that redials on its own, for the
+// tests that drop the connection and then call over the one replacing it.
+func StartReconnecting(t *testing.T) *Env { return start(t, true) }
+
+func start(t *testing.T, reconnect bool) *Env {
 	t.Helper()
 	cancelSeen.Store(false)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -60,7 +68,7 @@ func Start(t *testing.T) *Env {
 	targetURL := startAgentTarget(t)
 	h, httpSrv := startHub(t)
 	grpcAddr := startHubGRPC(t, h)
-	agentErr := startAgent(t, ctx, httpSrv.URL, demoAddr, targetURL)
+	agentErr := startAgent(t, ctx, httpSrv.URL, demoAddr, targetURL, reconnect)
 
 	env := &Env{
 		Hub:                h,
@@ -222,9 +230,11 @@ func startHubGRPC(t *testing.T, h *hub.Hub) string {
 	return lis.Addr().String()
 }
 
-// startAgent returns the channel ConnectOnce's result lands in, so a failed
-// dial, auth or hello shows up as itself instead of as a registration timeout.
-func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr, httpTarget string) <-chan error {
+// startAgent returns the channel the agent's eventual error lands in, so a
+// failed dial, auth or hello shows up as itself instead of as a registration
+// timeout. A reconnecting agent retries instead, so its channel only ever
+// carries the end of ctx.
+func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr, httpTarget string, reconnect bool) <-chan error {
 	t.Helper()
 	a := agent.New(agent.Config{
 		HubURL:     "ws" + strings.TrimPrefix(hubHTTPURL, "http") + "/agent/connect",
@@ -233,9 +243,17 @@ func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr, httpTar
 		Version:    "test",
 		GRPCTarget: demoAddr,
 		HTTPTarget: httpTarget,
+		MinBackoff: 10 * time.Millisecond,
+		MaxBackoff: 50 * time.Millisecond,
 	})
 	errc := make(chan error, 1)
-	go func() { errc <- a.ConnectOnce(ctx) }()
+	go func() {
+		if reconnect {
+			errc <- a.Run(ctx)
+			return
+		}
+		errc <- a.ConnectOnce(ctx)
+	}()
 	t.Cleanup(func() { a.Close() })
 	return errc
 }

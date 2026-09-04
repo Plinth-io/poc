@@ -47,11 +47,18 @@ type Hub struct {
 }
 
 func New(cfg Config) *Hub {
-	// Config.Tokens can be built by hand, bypassing ParseTokens' guarantees;
-	// an empty key would otherwise match the empty token bearerToken trims a
-	// bare "Bearer " down to.
-	delete(cfg.Tokens, "")
-	return &Hub{tokens: cfg.Tokens, agents: newAgents(), inspector: NewInspector(inspectorCapacity)}
+	// Copied rather than used in place: Config.Tokens can be built by hand,
+	// bypassing ParseTokens' guarantees, and an empty key would match the
+	// empty token bearerToken trims a bare "Bearer " down to. Dropping it
+	// from the caller's own map would be a side effect nobody asked for.
+	tokens := make(map[string]string, len(cfg.Tokens))
+	for token, id := range cfg.Tokens {
+		if token == "" {
+			continue
+		}
+		tokens[token] = id
+	}
+	return &Hub{tokens: tokens, agents: newAgents(), inspector: NewInspector(inspectorCapacity)}
 }
 
 func (h *Hub) Agents() *Agents { return h.agents }
