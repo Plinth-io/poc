@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,7 +41,10 @@ func client(t *testing.T) demov1.DemoClient {
 }
 
 func TestEchoReturnsInput(t *testing.T) {
-	got, err := client(t).Echo(context.Background(), &demov1.EchoRequest{Text: "hallo"})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	got, err := client(t).Echo(ctx, &demov1.EchoRequest{Text: "hallo"})
 	if err != nil {
 		t.Fatalf("Echo: %v", err)
 	}
@@ -50,7 +54,10 @@ func TestEchoReturnsInput(t *testing.T) {
 }
 
 func TestTailStreamsRequestedLines(t *testing.T) {
-	stream, err := client(t).Tail(context.Background(), &demov1.TailRequest{Lines: 4})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client(t).Tail(ctx, &demov1.TailRequest{Lines: 4})
 	if err != nil {
 		t.Fatalf("Tail: %v", err)
 	}
@@ -74,7 +81,10 @@ func TestTailStreamsRequestedLines(t *testing.T) {
 }
 
 func TestChatEchoesEveryMessage(t *testing.T) {
-	stream, err := client(t).Chat(context.Background())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client(t).Chat(ctx)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -96,8 +106,11 @@ func TestChatEchoesEveryMessage(t *testing.T) {
 }
 
 func TestFailReturnsCodeMessageAndTrailer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
 	var trailer metadataCollector
-	_, err := client(t).Fail(context.Background(), &demov1.FailRequest{Reason: "kaputt"},
+	_, err := client(t).Fail(ctx, &demov1.FailRequest{Reason: "kaputt"},
 		grpc.Trailer(&trailer.md))
 	if err == nil {
 		t.Fatal("Fail returned no error")
