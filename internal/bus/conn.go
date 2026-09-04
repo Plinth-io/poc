@@ -38,10 +38,12 @@ type OpenFunc func(*Stream, *busv1.Envelope)
 // Conn multiplexes many logical streams over one websocket. It knows nothing
 // about gRPC or HTTP; the relays are its users.
 //
-// From NewConn onward, the Conn owns the underlying websocket: Run guarantees
-// the fd is released before it returns, and nothing outside Conn ever calls
-// ws.Close or ws.CloseNow directly. closeStarted is the single gate that
-// enforces this — see startClose and Run.
+// From NewConn onward, the Conn owns the underlying websocket: a socket that
+// has reached NewConn is closed only by the Conn itself (Run or startClose),
+// never by the caller directly. A socket that never reached NewConn — e.g.
+// an early return before NewConn is called — is still the caller's own to
+// close. closeStarted is the single gate that enforces exclusivity once the
+// Conn owns the socket — see startClose and Run.
 type Conn struct {
 	Streams *Registry
 
@@ -101,8 +103,11 @@ func (c *Conn) Send(ctx context.Context, env *busv1.Envelope) error {
 }
 
 // Run drives the read and write loops until one of them fails, then closes
-// every stream of this connection. It guarantees the underlying websocket's
-// fd is released before it returns: see the Conn doc comment and startClose.
+// every stream of this connection. The underlying websocket's fd is released
+// before Run returns if Run itself wins the close, or shortly after by the
+// detached close goroutine if some other call (readLoop's own protocol-error
+// path, or an external CloseWith) already started closing it — see the Conn
+// doc comment and startClose.
 func (c *Conn) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

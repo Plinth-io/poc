@@ -43,8 +43,12 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial hub: %w", err)
 	}
-	defer ws.CloseNow()
 
+	// Below this point, ws is ours to close until bus.NewConn takes it over;
+	// after that, conn.Run owns closing it (see the Conn doc comment). No
+	// defer here: a deferred close would race conn.Run's own close exactly
+	// like the hub's did (see startClose in internal/bus/conn.go), so the two
+	// early returns below close explicitly instead.
 	hello := &busv1.Envelope{Payload: &busv1.Envelope_Hello{Hello: &busv1.Hello{
 		AgentId: a.cfg.AgentID,
 		Version: a.cfg.Version,
@@ -52,9 +56,15 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	}}}
 	raw, err := proto.Marshal(hello)
 	if err != nil {
+		if cerr := ws.CloseNow(); cerr != nil {
+			slog.Debug("close websocket after marshal failure", "err", cerr)
+		}
 		return fmt.Errorf("marshal hello: %w", err)
 	}
 	if err := ws.Write(ctx, websocket.MessageBinary, raw); err != nil {
+		if cerr := ws.CloseNow(); cerr != nil {
+			slog.Debug("close websocket after failed hello", "err", cerr)
+		}
 		return fmt.Errorf("send hello: %w", err)
 	}
 
