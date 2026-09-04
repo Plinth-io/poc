@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,9 +40,19 @@ type Env struct {
 	AgentHTTPTargetURL string
 }
 
+// cancelSeen records whether the /sse route's handler observed its request
+// context end, so a test can prove HttpCancel travelled all the way to the
+// handler behind the agent.
+var cancelSeen atomic.Bool
+
+// CancelObserved reports whether the /sse route's handler has seen its
+// request context cancelled since the last Start.
+func (e *Env) CancelObserved() bool { return cancelSeen.Load() }
+
 // Start brings the whole chain up and tears it down with the test.
 func Start(t *testing.T) *Env {
 	t.Helper()
+	cancelSeen.Store(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -137,6 +148,28 @@ func startAgentTarget(t *testing.T) string {
 			_, _ = io.WriteString(w, "chunk\n")
 			w.(http.Flusher).Flush()
 			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+		// Writes one event immediately and then keeps the response open, so a
+		// test can prove that bytes arrive before the handler returns.
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", http.StatusInternalServerError)
+			return
+		}
+		for i := 0; ; i++ {
+			if _, err := fmt.Fprintf(w, "data: tick %d\n\n", i); err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				cancelSeen.Store(true)
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
 		}
 	})
 	mux.HandleFunc("/teapot", func(w http.ResponseWriter, r *http.Request) {
