@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/coder/websocket"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/rawcodec"
+	"plinth.io/poc/internal/relay"
 )
 
 type Config struct {
@@ -26,6 +31,11 @@ type Config struct {
 
 type Agent struct {
 	cfg Config
+
+	mu      sync.Mutex
+	grpcCC  *grpc.ClientConn
+	busConn *bus.Conn
+	ctx     context.Context
 }
 
 func New(cfg Config) *Agent { return &Agent{cfg: cfg} }
@@ -69,6 +79,7 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	}
 
 	conn := bus.NewConn(ws, bus.SideAgent, a.onOpen)
+	a.setConn(ctx, conn)
 	slog.Info("connected to hub", "agent_id", a.cfg.AgentID)
 	return conn.Run(ctx)
 }
@@ -84,8 +95,66 @@ func (a *Agent) targets() []string {
 	return out
 }
 
-// onOpen handles a stream the hub opened. Task 7 fills in the gRPC branch and
-// Task 11 the HTTP branch.
+// setConn records what ConnectOnce built. onOpen only receives the stream, so
+// the connection and its context have to be reachable from the Agent.
+func (a *Agent) setConn(ctx context.Context, c *bus.Conn) {
+	a.mu.Lock()
+	a.busConn, a.ctx = c, ctx
+	a.mu.Unlock()
+}
+
+func (a *Agent) session() (context.Context, *bus.Conn) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ctx == nil {
+		return context.Background(), a.busConn
+	}
+	return a.ctx, a.busConn
+}
+
+// grpcConn lazily dials the local gRPC target. ForceCodec keeps the tunnelled
+// payload bytes untouched on this hop as well.
+func (a *Agent) grpcConn() (*grpc.ClientConn, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.grpcCC != nil {
+		return a.grpcCC, nil
+	}
+	cc, err := grpc.NewClient(a.cfg.GRPCTarget,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.ForceCodec(rawcodec.Codec{})),
+	)
+	if err != nil {
+		return nil, err
+	}
+	a.grpcCC = cc
+	return cc, nil
+}
+
+// Close releases the connection to the local target. It deliberately leaves
+// the websocket alone: from bus.NewConn onward the bus.Conn owns that socket.
+func (a *Agent) Close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.grpcCC != nil {
+		_ = a.grpcCC.Close()
+		a.grpcCC = nil
+	}
+}
+
+// onOpen handles a stream the hub opened. Task 11 adds the HTTP branch.
 func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
-	st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
+	switch p := env.GetPayload().(type) {
+	case *busv1.Envelope_RpcOpen:
+		cc, err := a.grpcConn()
+		if err != nil {
+			slog.Error("cannot reach local gRPC target", "err", err)
+			st.Close(err)
+			return
+		}
+		ctx, conn := a.session()
+		relay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
+	default:
+		st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
+	}
 }

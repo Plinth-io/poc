@@ -9,10 +9,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/rawcodec"
+	"plinth.io/poc/internal/relay"
 )
 
 // helloTimeout bounds how long a freshly upgraded connection may stay silent.
@@ -154,4 +157,13 @@ func readHello(ctx context.Context, ws *websocket.Conn) (*busv1.Hello, error) {
 		return nil, fmt.Errorf("hello: first envelope carries %T", env.GetPayload())
 	}
 	return hello, nil
+}
+
+// GRPCServer accepts every method and relays it. ForceServerCodec keeps the
+// payload bytes untouched, so the hub needs no schema of the target service.
+func (h *Hub) GRPCServer() *grpc.Server {
+	return grpc.NewServer(
+		grpc.ForceServerCodec(rawcodec.Codec{}),
+		grpc.UnknownServiceHandler(relay.HubGRPC(h.agents)),
+	)
 }
