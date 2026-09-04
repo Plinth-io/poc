@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,4 +94,77 @@ func TestKeepaliveClosesConnectionAfterAMissedPong(t *testing.T) {
 	case <-time.After(9 * time.Second):
 		t.Fatal("ConnectOnce did not return after a missed pong")
 	}
+}
+
+// TestStatusReflectsConnectionLifecycle drives one real ConnectOnce round
+// trip and checks that Status().Connected flips both ways: true once the
+// connection is up, false again once the server ends it. Without resetting
+// busConn on disconnect, the second half of this would fail forever.
+func TestStatusReflectsConnectionLifecycle(t *testing.T) {
+	helloRead := make(chan struct{})
+	closeServer := make(chan struct{})
+	var closeOnce sync.Once
+	triggerClose := func() { closeOnce.Do(func() { close(closeServer) }) }
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/agent/connect", func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		if _, _, err := ws.Read(r.Context()); err != nil {
+			return
+		}
+		close(helloRead)
+		<-closeServer
+		_ = ws.Close(websocket.StatusNormalClosure, "test ends the connection")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	t.Cleanup(triggerClose)
+
+	a := New(Config{
+		HubURL:  "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent/connect",
+		Token:   "secret1",
+		AgentID: "mac-1",
+		Version: "test",
+	})
+
+	if a.Status().Connected {
+		t.Fatal("Connected = true before any connection was made")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.ConnectOnce(ctx) }()
+
+	select {
+	case <-helloRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received the hello")
+	}
+	waitForStatus(t, a, true, "the connection was established")
+
+	triggerClose()
+	waitForStatus(t, a, false, "the server ended the connection")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConnectOnce did not return after the server closed the connection")
+	}
+}
+
+func waitForStatus(t *testing.T, a *Agent, want bool, after string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if a.Status().Connected == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("Status().Connected = %v after %s, want %v", !want, after, want)
 }
