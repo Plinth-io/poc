@@ -52,11 +52,12 @@ type Config struct {
 type Agent struct {
 	cfg Config
 
-	mu      sync.Mutex
-	closed  bool
-	grpcCC  *grpc.ClientConn
-	busConn *bus.Conn
-	ctx     context.Context
+	mu          sync.Mutex
+	closed      bool
+	grpcCC      *grpc.ClientConn
+	busConn     *bus.Conn
+	ctx         context.Context
+	connectedAt time.Time
 }
 
 func New(cfg Config) *Agent { return &Agent{cfg: cfg} }
@@ -107,7 +108,9 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	defer stopPing()
 	go a.keepalive(pingCtx, ws, conn)
 
-	return conn.Run(ctx)
+	err = conn.Run(ctx)
+	a.clearConn()
+	return err
 }
 
 // Run keeps a connection to the hub alive until ctx ends. Streams do not
@@ -185,6 +188,16 @@ func (a *Agent) targets() []string {
 func (a *Agent) setConn(ctx context.Context, c *bus.Conn) {
 	a.mu.Lock()
 	a.busConn, a.ctx = c, ctx
+	a.connectedAt = time.Now()
+	a.mu.Unlock()
+}
+
+// clearConn drops the reference to a connection that has ended, so
+// Status().Connected reports the current state instead of staying true
+// forever after the first connection.
+func (a *Agent) clearConn() {
+	a.mu.Lock()
+	a.busConn = nil
 	a.mu.Unlock()
 }
 

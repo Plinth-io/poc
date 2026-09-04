@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Agent {{.AgentID}}</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; }
+  table { border-collapse: collapse; margin-bottom: 1.5rem; }
+  th, td { text-align: left; padding: .2rem 1rem .2rem 0; }
+  #log { white-space: pre-wrap; border-top: 1px solid #ccc; padding-top: .5rem; }
+</style>
+<h1>Agent {{.AgentID}}</h1>
+<table>
+  <tr><th>Verbindung</th><td>{{if .Connected}}verbunden seit {{.Since}}{{else}}getrennt{{end}}</td></tr>
+  <tr><th>Lokale Ziele</th><td>{{range .Targets}}{{.}}<br>{{end}}</td></tr>
+</table>
+<h2>Logs</h2>
+<div id="log">{{range .Lines}}{{.}}
+{{end}}</div>
+<a id="stream" href="{{.Base}}/logs/stream" hidden></a>
+<script>
+  const log = document.getElementById("log");
+  const es = new EventSource(document.getElementById("stream").getAttribute("href"));
+  es.onmessage = (e) => {
+    log.textContent += e.data + "\n";
+    window.scrollTo(0, document.body.scrollHeight);
+  };
+</script>
