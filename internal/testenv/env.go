@@ -159,13 +159,19 @@ func startAgentTarget(t *testing.T) string {
 			http.Error(w, "no flusher", http.StatusInternalServerError)
 			return
 		}
+		// Bounded well past any assertion a test makes on this route (a few
+		// seconds) so that a regression which drops the client's cancellation
+		// still lets the handler return and srv.Close() complete, instead of
+		// hanging the test binary forever.
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
 		for i := 0; ; i++ {
 			if _, err := fmt.Fprintf(w, "data: tick %d\n\n", i); err != nil {
 				return
 			}
 			flusher.Flush()
 			select {
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				cancelSeen.Store(true)
 				return
 			case <-time.After(20 * time.Millisecond):
