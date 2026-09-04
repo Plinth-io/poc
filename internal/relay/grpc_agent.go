@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
@@ -53,6 +54,16 @@ func ServeRPC(parent context.Context, st *bus.Stream, conn *bus.Conn, open *busv
 // pumpBusToLocal is the single sending goroutine towards the local service. It
 // owns the hub to agent direction and therefore its own Reassembler.
 func pumpBusToLocal(ctx context.Context, cancel context.CancelFunc, st *bus.Stream, cs grpc.ClientStream) {
+	// A panic here would kill the agent: nothing above this goroutine can
+	// recover it. Cancelling is enough to end the call — pumpLocalToBus turns
+	// the cancelled context into an RpcEnd for the hub.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while pumping towards the local service", "stream_id", st.ID, "err", r)
+			cancel()
+		}
+	}()
+
 	var re bus.Reassembler
 	for {
 		select {

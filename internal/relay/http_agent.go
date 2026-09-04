@@ -2,8 +2,12 @@ package relay
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
@@ -15,6 +19,24 @@ func ServeHTTPStream(parent context.Context, st *bus.Stream, conn *bus.Conn, ope
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	defer st.Close(nil)
+
+	// Registered last, so it runs before the two defers above: the hub is
+	// waiting for a terminal envelope and would otherwise wait for one that a
+	// panic keeps it from ever getting.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while serving a tunnelled HTTP request", "stream_id", st.ID, "err", r)
+			sendResponseEnd(ctx, conn, st, fmt.Errorf("relay panic: %v", r))
+		}
+	}()
+
+	// The target is a bare scheme://host, so a uri that does not start with a
+	// slash would re-parse the concatenation into a different destination —
+	// "@example.com/" would turn the target into userinfo.
+	if !strings.HasPrefix(open.GetUri(), "/") {
+		sendResponseEnd(ctx, conn, st, errors.New("relay: uri must start with /"))
+		return
+	}
 
 	pr, pw := io.Pipe()
 	req, err := http.NewRequestWithContext(ctx, open.GetMethod(), target+open.GetUri(), pr)
@@ -70,6 +92,17 @@ func ServeHTTPStream(parent context.Context, st *bus.Stream, conn *bus.Conn, ope
 // pumpHTTPRequestBody is the only reader of st.In for this stream. It keeps
 // running after HttpEnd so a later HttpCancel still reaches the request.
 func pumpHTTPRequestBody(ctx context.Context, cancel context.CancelFunc, st *bus.Stream, pw *io.PipeWriter) {
+	// Nothing above this goroutine can recover a panic, so it recovers its
+	// own: failing the pipe lets the request itself end instead of hanging on
+	// a body that stopped being written.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while pumping the HTTP request body", "stream_id", st.ID, "err", r)
+			_ = pw.CloseWithError(fmt.Errorf("relay panic: %v", r))
+			cancel()
+		}
+	}()
+
 	bodyOpen := true
 	for {
 		select {

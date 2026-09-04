@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,5 +289,78 @@ func TestInvalidStatusFromTheAgentIsRefused(t *testing.T) {
 				t.Fatalf("status = %d, want 502", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// fakeHub is fakeAgent's mirror: a real bus whose agent side runs
+// ServeHTTPStream, so a test can send an HttpOpen no honest hub would build.
+// It returns the hub-side connection.
+func fakeHub(t *testing.T, target string) *bus.Conn {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		var agentConn *bus.Conn
+		agentConn = bus.NewConn(ws, bus.SideAgent, func(st *bus.Stream, env *busv1.Envelope) {
+			relay.ServeHTTPStream(r.Context(), st, agentConn, env.GetHttpOpen(), target, tunnelHTTP())
+		})
+		_ = agentConn.Run(r.Context())
+	}))
+	// Cancel before Close: the websocket handler only returns once its Conn
+	// does, and Close waits for outstanding requests.
+	t.Cleanup(func() { cancel(); wsSrv.Close() })
+
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(wsSrv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	conn := bus.NewConn(ws, bus.SideHub, nil)
+	go func() { _ = conn.Run(ctx) }()
+	return conn
+}
+
+// TestURIWithoutALeadingSlashIsRefused covers the guard against a uri that
+// re-parses the concatenation with the target into a different destination:
+// "@example.com/" would demote the target to userinfo. The hub never builds
+// such a uri, but the agent trusts nothing it reads off the bus.
+func TestURIWithoutALeadingSlashIsRefused(t *testing.T) {
+	var reached atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached.Store(true)
+	}))
+	defer target.Close()
+
+	conn := fakeHub(t, target.URL)
+	st, err := conn.Streams.Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close(nil)
+
+	open := &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_HttpOpen{
+		HttpOpen: &busv1.HttpOpen{Method: http.MethodGet, Uri: "@example.com/"},
+	}}
+	if err := conn.Send(context.Background(), open); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case env := <-st.In:
+		end := env.GetHttpResponseEnd()
+		if end == nil {
+			t.Fatalf("first envelope back is %T, want an HttpResponseEnd", env.GetPayload())
+		}
+		if end.GetError() == "" {
+			t.Fatal("the agent accepted a uri without a leading slash")
+		}
+	case <-time.After(callTimeout):
+		t.Fatal("no terminal envelope for the refused uri")
+	}
+	if reached.Load() {
+		t.Fatal("the refused request still reached a target")
 	}
 }

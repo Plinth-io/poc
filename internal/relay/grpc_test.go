@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -152,5 +153,43 @@ func TestConcurrentCallsStayOnTheirOwnStream(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// expiredStream is the smallest grpc.ServerStream that HubGRPC needs: a
+// method, metadata and a context whose deadline has already passed. Driving
+// this through a real gRPC client is not possible — the client refuses to send
+// a call whose deadline is already gone, so the hub would never see one.
+type expiredStream struct{ ctx context.Context }
+
+func (s expiredStream) SetHeader(metadata.MD) error  { return nil }
+func (s expiredStream) SendHeader(metadata.MD) error { return nil }
+func (s expiredStream) SetTrailer(metadata.MD)       {}
+func (s expiredStream) Context() context.Context     { return s.ctx }
+func (s expiredStream) SendMsg(any) error            { return nil }
+func (s expiredStream) RecvMsg(any) error            { return io.EOF }
+
+// transportStream carries the method name, which grpc.MethodFromServerStream
+// reads back out of the context.
+type transportStream struct{ method string }
+
+func (t *transportStream) Method() string                  { return t.method }
+func (t *transportStream) SetHeader(metadata.MD) error     { return nil }
+func (t *transportStream) SendHeader(metadata.MD) error    { return nil }
+func (t *transportStream) SetTrailer(md metadata.MD) error { return nil }
+
+// TestAnAlreadyExpiredDeadlineIsRefused pins that no stream is opened for a
+// call with nothing left to spend: the lookup hands out a nil connection, so
+// touching it after this point would surface as INTERNAL from the handler's
+// own panic recovery instead of DEADLINE_EXCEEDED.
+func TestAnAlreadyExpiredDeadlineIsRefused(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &transportStream{method: "/demo.v1.Demo/Echo"})
+	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(relay.AgentIDKey, "mac-1"))
+
+	err := relay.HubGRPC(stubLookup{conn: nil})(nil, expiredStream{ctx: ctx})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("Code = %v (%v), want %v", status.Code(err), err, codes.DeadlineExceeded)
 	}
 }

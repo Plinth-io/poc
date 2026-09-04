@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
@@ -53,16 +54,23 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 			return status.Errorf(codes.Unavailable, "agent %q is not connected", ids[0])
 		}
 
+		// Before opening a stream: a deadline that is already spent has no
+		// remaining runtime to carry, and sending zero would mean "no
+		// deadline" to the agent — the call would run on unbounded.
+		var timeout int64
+		if dl, ok := ss.Context().Deadline(); ok {
+			timeout = int64(time.Until(dl))
+			if timeout <= 0 {
+				return status.Error(codes.DeadlineExceeded, "deadline expired before the call was relayed")
+			}
+		}
+
 		st, err = conn.Streams.Open()
 		if err != nil {
 			return status.Error(codes.ResourceExhausted, err.Error())
 		}
 		defer st.Close(nil)
 
-		var timeout int64
-		if dl, ok := ss.Context().Deadline(); ok {
-			timeout = int64(time.Until(dl))
-		}
 		open := &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_RpcOpen{
 			RpcOpen: &busv1.RpcOpen{
 				Method:       method,
@@ -81,7 +89,21 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 
 // forwardRequests is the single sending goroutine for this stream's caller to
 // agent direction, which is what keeps the envelope order intact.
+//
+// It carries its own recover: grpc-go's handler recovery does not cover
+// goroutines the handler spawned, so a panic here would take the whole hub
+// down. Closing the stream is what surfaces it to the caller — forwardResponses
+// turns the recorded status into the call's result.
 func forwardRequests(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := status.Errorf(codes.Internal, "relay panic: %v", r)
+			slog.Error("panic while forwarding requests", "stream_id", st.ID, "err", r)
+			cancelAgent(conn, st, err.Error())
+			st.Close(err)
+		}
+	}()
+
 	ctx := ss.Context()
 	for {
 		// msg must stay loop-local: bus.Chunks hands slices of this buffer to
@@ -121,6 +143,14 @@ func forwardResponses(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) erro
 			return status.FromContextError(ss.Context().Err()).Err()
 
 		case <-st.Done():
+			// A status recorded on the stream comes from forwardRequests'
+			// panic recovery and is the real cause; anything else means the
+			// bus connection died.
+			if err := st.Err(); err != nil {
+				if s, ok := status.FromError(err); ok {
+					return s.Err()
+				}
+			}
 			// No cancel here: the bus connection is what died, so there is
 			// nobody left to tell.
 			//
