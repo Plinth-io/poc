@@ -80,6 +80,24 @@ func TestPostBodyIsForwarded(t *testing.T) {
 	}
 }
 
+func TestLargeResponseArrivesIntact(t *testing.T) {
+	env := testenv.Start(t)
+
+	resp, err := tunnelHTTP().Get(env.HubHTTPURL + "/a/" + env.AgentID + "/big")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := testenv.BigResponse(); !bytes.Equal(body, want) {
+		t.Fatalf("body = %d bytes, want %d identical bytes", len(body), len(want))
+	}
+}
+
 func TestForwardedPrefixIsSet(t *testing.T) {
 	env := testenv.Start(t)
 

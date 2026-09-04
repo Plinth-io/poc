@@ -125,6 +125,9 @@ func startAgentTarget(t *testing.T) string {
 	mux.HandleFunc("/prefix", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, r.Header.Get(relay.ForwardedPrefixHeader))
 	})
+	mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(BigResponse())
+	})
 	mux.HandleFunc("/teapot", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = io.WriteString(w, "no coffee here")
@@ -132,6 +135,17 @@ func startAgentTarget(t *testing.T) string {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// BigResponse is the body of the target's /big route: large enough to span
+// several response envelopes and not self-similar, so a chunk that is lost,
+// reordered or overwritten by the next read shows up as a mismatch.
+func BigResponse() []byte {
+	out := make([]byte, 300<<10)
+	for i := range out {
+		out[i] = byte(i % 251)
+	}
+	return out
 }
 
 func startHub(t *testing.T) (*hub.Hub, *httptest.Server) {
