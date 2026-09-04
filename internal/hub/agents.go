@@ -2,6 +2,7 @@ package hub
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"plinth.io/poc/internal/bus"
@@ -14,6 +15,23 @@ type Agent struct {
 	Since   time.Time
 	Version string
 	Targets []string
+
+	// pong holds the last answered keepalive ping as unix nanoseconds. The
+	// keepalive goroutine writes it while the UI reads it.
+	pong atomic.Int64
+}
+
+// markPong records a keepalive round trip that came back.
+func (a *Agent) markPong() { a.pong.Store(time.Now().UnixNano()) }
+
+// LastPong is the zero time until the first ping has been answered, which is
+// the state of every connection younger than one ping interval.
+func (a *Agent) LastPong() time.Time {
+	ns := a.pong.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // Agents holds the live agent connections.

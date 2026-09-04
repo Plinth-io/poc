@@ -9,21 +9,28 @@
 </style>
 <h1>Verbundene Agents</h1>
 <table>
-  <tr><th>ID</th><th>Version</th><th>Verbunden seit</th><th>Aktive Streams</th><th></th></tr>
+  <tr><th>ID</th><th>Version</th><th>Verbunden seit</th><th>Letzter Pong</th><th>Aktive Streams</th><th></th></tr>
   {{range .Agents}}
   <tr>
-    <td>{{.ID}}</td><td>{{.Version}}</td><td>{{.Since}}</td><td>{{.Streams}}</td>
+    <td>{{.ID}}</td><td>{{.Version}}</td><td>{{.Since}}</td><td>{{.Pong}}</td><td>{{.Streams}}</td>
     <td><a href="/a/{{.ID}}/">UI öffnen</a></td>
   </tr>
   {{else}}
-  <tr><td colspan="5">keine</td></tr>
+  <tr><td colspan="6">keine</td></tr>
   {{end}}
 </table>
 
 <h2>Envelopes</h2>
 <table id="events">
   <tr><th>Zeit</th><th>Agent</th><th>Richtung</th><th>Stream</th><th>Typ</th><th>Bytes</th></tr>
-  <tbody id="rows"></tbody>
+  <tbody id="rows">
+    {{range .Events}}
+    <tr>
+      <td>{{.At}}</td><td>{{.AgentID}}</td><td>{{.Dir}}</td>
+      <td>{{.StreamID}}</td><td>{{.Kind}}</td><td>{{.Size}}</td>
+    </tr>
+    {{end}}
+  </tbody>
 </table>
 <script>
   const rows = document.getElementById("rows");

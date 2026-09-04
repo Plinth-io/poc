@@ -20,7 +20,20 @@ type agentRow struct {
 	ID      string
 	Version string
 	Since   string
+	Pong    string
 	Streams int
+}
+
+// eventView is one inspector event as both the page and the SSE stream show
+// it: handleIndex renders the retained backlog with it, handleEventStream
+// encodes the same shape as JSON for the events that follow.
+type eventView struct {
+	At       string
+	AgentID  string
+	Dir      string
+	StreamID uint64
+	Kind     string
+	Size     int
 }
 
 // handleIndex renders into a buffer before writing to w: unlike executing the
@@ -34,13 +47,26 @@ func (h *Hub) handleIndex(w http.ResponseWriter, _ *http.Request) {
 			ID:      ag.ID,
 			Version: ag.Version,
 			Since:   ag.Since.Format(time.RFC3339),
+			Pong:    pongCell(ag.LastPong()),
 			Streams: ag.Conn.Streams.Len(),
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 
+	// Newest first, the order the page's own script prepends live events in,
+	// so the backlog and what follows it read as one list.
+	events := h.inspector.Events()
+	backlog := make([]eventView, 0, len(events))
+	for i := len(events) - 1; i >= 0; i-- {
+		backlog = append(backlog, view(events[i]))
+	}
+
 	var buf bytes.Buffer
-	if err := uiTmpl.Execute(&buf, struct{ Agents []agentRow }{Agents: rows}); err != nil {
+	data := struct {
+		Agents []agentRow
+		Events []eventView
+	}{Agents: rows, Events: backlog}
+	if err := uiTmpl.Execute(&buf, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -79,14 +105,21 @@ func (h *Hub) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// view is the JSON shape the page consumes.
-func view(ev Event) map[string]any {
-	return map[string]any{
-		"At":       ev.At.Format("15:04:05.000"),
-		"AgentID":  ev.AgentID,
-		"Dir":      ev.Dir,
-		"StreamID": ev.StreamID,
-		"Kind":     ev.Kind,
-		"Size":     ev.Size,
+// pongCell keeps the "never answered yet" case out of the template.
+func pongCell(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Format(time.RFC3339)
+}
+
+func view(ev Event) eventView {
+	return eventView{
+		At:       ev.At.Format("15:04:05.000"),
+		AgentID:  ev.AgentID,
+		Dir:      ev.Dir,
+		StreamID: ev.StreamID,
+		Kind:     ev.Kind,
+		Size:     ev.Size,
 	}
 }

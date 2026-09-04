@@ -21,6 +21,14 @@ import (
 // helloTimeout bounds how long a freshly upgraded connection may stay silent.
 const helloTimeout = 5 * time.Second
 
+// pingInterval and pingTimeout are vars, not consts, so a test can shrink them
+// to make a missed pong observable in well under a second instead of the
+// production ~45 s worst case.
+var (
+	pingInterval = 15 * time.Second
+	pingTimeout  = 30 * time.Second
+)
+
 type Config struct {
 	Tokens map[string]string // token -> agent id
 }
@@ -47,9 +55,6 @@ func New(cfg Config) *Hub {
 }
 
 func (h *Hub) Agents() *Agents { return h.agents }
-
-// Inspector gives the UI access to the live envelope feed.
-func (h *Hub) Inspector() *Inspector { return h.inspector }
 
 // SetOpenFunc installs the handler for streams an agent opens towards the hub.
 func (h *Hub) SetOpenFunc(f bus.OpenFunc) {
@@ -130,9 +135,50 @@ func (h *Hub) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.agents.Remove(agentID, ag)
 
+	pingCtx, stopPing := context.WithCancel(ctx)
+	defer stopPing()
+	go h.keepalive(pingCtx, ws, conn, ag)
+
 	slog.Info("agent connected", "agent_id", agentID, "version", ag.Version)
 	err = conn.Run(ctx)
 	slog.Info("agent disconnected", "agent_id", agentID, "err", err)
+}
+
+// keepalive mirrors the agent's own: without it a silently dead agent — a
+// killed machine, a black-holed route — keeps its registry entry until TCP
+// gives up, which takes minutes. Meanwhile Lookup succeeds, envelopes pile up
+// in the outbox and a caller without a deadline waits forever instead of
+// getting the UNAVAILABLE the design promises.
+//
+// An idle agent cannot fail this: coder/websocket answers a ping from its read
+// loop, which every connected agent runs regardless of whether any stream is
+// active, so what the timeout measures is the connection, not the traffic on
+// it. The teardown goes through conn.CloseWith, never through ws: from
+// bus.NewConn onward the bus.Conn is the socket's only closer. That close is a
+// handshake and waits up to 5 s for a close frame a dead peer never sends, so
+// the registry entry is dropped here rather than left to handleConnect's own
+// deferred Remove — a connection that failed its keepalive must stop being
+// handed to callers at once, not five seconds later.
+func (h *Hub) keepalive(ctx context.Context, ws *websocket.Conn, conn *bus.Conn, ag *Agent) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := ws.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				slog.Warn("agent stopped answering pings", "agent_id", ag.ID, "err", err)
+				h.agents.Remove(ag.ID, ag)
+				conn.CloseWith(websocket.StatusNormalClosure, "keepalive: no pong")
+				return
+			}
+			ag.markPong()
+		}
+	}
 }
 
 // closeAsync starts the close handshake without blocking the caller, the same

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,5 +136,49 @@ func TestEventStreamShowsEnvelopesCrossingTheBus(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		streamCancel() // unblocks the reader goroutine so it doesn't leak
 		t.Fatal("envelope sent over the bus never reached the SSE stream")
+	}
+}
+
+// TestHubIndexShowsTheRetainedEnvelopes pins that the inspector's buffer is
+// actually rendered: without the backlog on the page, the inspector stays
+// blank until the next envelope happens to cross the bus, which is the one
+// thing it exists to show.
+func TestHubIndexShowsTheRetainedEnvelopes(t *testing.T) {
+	h, wsURL := startHub(t)
+	ctx, cancel := contextWithCancel(t)
+	defer cancel()
+	connectAgent(t, ctx, wsURL, "secret1", "mac-1")
+	ag := waitForAgent(t, h, "mac-1")
+
+	if err := ag.Conn.Send(ctx, &busv1.Envelope{
+		StreamId: 42,
+		Payload:  &busv1.Envelope_HttpCancel{HttpCancel: &busv1.HttpCancel{}},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	srv := httptest.NewServer(h.Mux())
+	defer srv.Close()
+
+	// The envelope is recorded by the writer goroutine, so a first load can
+	// legitimately be too early.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Get(srv.URL + "/")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		page, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if strings.Contains(string(page), "http_cancel") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the index never showed the retained envelope")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
