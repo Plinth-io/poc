@@ -78,13 +78,11 @@ func (h *Hub) handleConnect(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("websocket upgrade failed", "agent_id", agentID, "err", err)
 		return
 	}
-	// net/http does not close a hijacked connection on its own, and the normal
-	// teardown here is the peer vanishing without a close frame (the agent's
-	// own defer is CloseNow, which sends none either) — so conn.Run returning
-	// leaves the fd open unless something closes it explicitly. CloseNow after
-	// an already-closed websocket is a no-op, so this covers every path below
-	// harmlessly, including the two explicit rejections.
-	defer ws.CloseNow()
+	// The two rejection paths below use closeAsync directly, since bus.Conn
+	// does not own ws yet at that point. From bus.NewConn onward (below),
+	// bus.Conn owns ws: conn.Run guarantees the fd is released before it
+	// returns, so nothing here needs to close ws again once that call is
+	// reached — doing so would race with Run's own close.
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()

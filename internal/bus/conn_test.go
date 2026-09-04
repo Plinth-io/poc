@@ -223,3 +223,46 @@ func TestMalformedEnvelopeClosesTheWholeConnection(t *testing.T) {
 		t.Fatal("peer socket still readable after a protocol error")
 	}
 }
+
+func TestCloseWithDoesNotBlockConcurrentRun(t *testing.T) {
+	// CloseWith (an external close, e.g. handleConnect replacing this
+	// connection) and Run's own close-on-return must never both call into
+	// the websocket: coder/websocket's Close and CloseNow share an internal
+	// CAS guard where the loser of a concurrent call blocks until the
+	// winner's handshake finishes. This is a fast-path sanity check with a
+	// live, responsive peer (mirrors hub_test.TestSecondConnectionReplacesTheFirst,
+	// one layer down); it does not reliably reproduce the timing window of the
+	// underlying race — that needs a slow/unresponsive peer, which is too
+	// slow for a unit test, so the actual mutual-exclusion guarantee is
+	// established by reading startClose and Run's compare-and-swap, not by
+	// this test alone.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = bus.NewConn(ws, bus.SideAgent, nil).Run(ctx)
+	}))
+	defer srv.Close()
+
+	ws, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	hub := bus.NewConn(ws, bus.SideHub, nil)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- hub.Run(ctx) }()
+	time.Sleep(20 * time.Millisecond) // let both sides settle into their read loops
+
+	hub.CloseWith(websocket.StatusNormalClosure, "replaced by a newer connection")
+
+	select {
+	case <-runDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run took too long to return after a concurrent CloseWith, despite a live peer acking the close")
+	}
+}

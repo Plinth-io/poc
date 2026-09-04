@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,6 +37,11 @@ type OpenFunc func(*Stream, *busv1.Envelope)
 
 // Conn multiplexes many logical streams over one websocket. It knows nothing
 // about gRPC or HTTP; the relays are its users.
+//
+// From NewConn onward, the Conn owns the underlying websocket: Run guarantees
+// the fd is released before it returns, and nothing outside Conn ever calls
+// ws.Close or ws.CloseNow directly. closeStarted is the single gate that
+// enforces this — see startClose and Run.
 type Conn struct {
 	Streams *Registry
 
@@ -45,7 +51,9 @@ type Conn struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
-	closeDone chan struct{}
+
+	closeStarted atomic.Bool
+	closeDone    chan struct{}
 
 	tapMu sync.RWMutex
 	tap   func(dir string, env *busv1.Envelope)
@@ -54,11 +62,12 @@ type Conn struct {
 func NewConn(ws *websocket.Conn, side Side, onOpen OpenFunc) *Conn {
 	ws.SetReadLimit(readLimit)
 	return &Conn{
-		Streams: NewRegistry(side),
-		ws:      ws,
-		out:     make(chan *busv1.Envelope, outboxSize),
-		onOpen:  onOpen,
-		closed:  make(chan struct{}),
+		Streams:   NewRegistry(side),
+		ws:        ws,
+		out:       make(chan *busv1.Envelope, outboxSize),
+		onOpen:    onOpen,
+		closed:    make(chan struct{}),
+		closeDone: make(chan struct{}),
 	}
 }
 
@@ -92,7 +101,8 @@ func (c *Conn) Send(ctx context.Context, env *busv1.Envelope) error {
 }
 
 // Run drives the read and write loops until one of them fails, then closes
-// every stream of this connection.
+// every stream of this connection. It guarantees the underlying websocket's
+// fd is released before it returns: see the Conn doc comment and startClose.
 func (c *Conn) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -118,7 +128,21 @@ func (c *Conn) Run(ctx context.Context) error {
 		err = writeErr
 	}
 
-	if c.closeDone != nil {
+	// Exactly one of Run and startClose ever calls into the websocket's own
+	// Close/CloseNow: whichever wins this compare-and-swap. Losing it means a
+	// close handshake is already under way — started by readLoop's own
+	// protocol-error path, or by another connection's CloseWith replacing
+	// this one — and that goroutine releases the fd itself when it finishes.
+	// coder/websocket's Close and CloseNow share an internal CAS guard where
+	// the loser of a concurrent call blocks until the winner's handshake
+	// ends, so calling CloseNow here too when a close is already starting
+	// would reintroduce exactly the handler-blocking bug this gate exists to
+	// prevent.
+	if c.closeStarted.CompareAndSwap(false, true) {
+		if err := c.ws.CloseNow(); err != nil {
+			slog.Debug("close websocket", "err", err)
+		}
+	} else {
 		select {
 		case <-c.closeDone:
 		case <-time.After(closeWait):
@@ -148,20 +172,24 @@ func (c *Conn) writeLoop(ctx context.Context) error {
 	}
 }
 
-// closeProtocolError starts the close handshake with StatusProtocolError but
-// does not block readLoop on it: Close performs a close handshake with a
-// fixed internal timeout, and a peer that never acks must not hold Run
-// hostage. Run still gives it up to closeWait before returning.
+// startClose begins the websocket close handshake for this connection, at
+// most once regardless of which goroutine calls it: readLoop's own
+// protocol-error path, or CloseWith from a connection that is replacing this
+// one. It does not block the caller: Close performs a close handshake with a
+// fixed internal timeout, and a peer that never acks must not hold the
+// caller hostage. Losing the race to Run's own compare-and-swap — Run already
+// decided to close the socket itself — makes this a no-op.
 //
 // ponytail: close handshake detached, join it if a caller ever needs the fd
-// released the moment Run returns.
-func (c *Conn) closeProtocolError(reason string) {
-	c.closeDone = make(chan struct{})
-	done := c.closeDone
+// released the moment this call returns rather than when Run does.
+func (c *Conn) startClose(code websocket.StatusCode, reason string) {
+	if !c.closeStarted.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
-		defer close(done)
-		if err := c.ws.Close(websocket.StatusProtocolError, reason); err != nil {
-			slog.Debug("close handshake after protocol error", "reason", reason, "err", err)
+		defer close(c.closeDone)
+		if err := c.ws.Close(code, reason); err != nil {
+			slog.Debug("close handshake", "reason", reason, "err", err)
 		}
 	}()
 }
@@ -173,7 +201,7 @@ func (c *Conn) readLoop(ctx context.Context) error {
 			return err
 		}
 		if typ != websocket.MessageBinary {
-			c.closeProtocolError("expected binary frames")
+			c.startClose(websocket.StatusProtocolError, "expected binary frames")
 			return fmt.Errorf("bus: unexpected message type %v", typ)
 		}
 
@@ -181,7 +209,7 @@ func (c *Conn) readLoop(ctx context.Context) error {
 		if err := proto.Unmarshal(raw, env); err != nil {
 			// A corrupt envelope means the bus state is no longer trustworthy,
 			// so the whole connection goes rather than a single stream.
-			c.closeProtocolError("malformed envelope")
+			c.startClose(websocket.StatusProtocolError, "malformed envelope")
 			return fmt.Errorf("bus: malformed envelope: %w", err)
 		}
 		c.observe("in", env)
@@ -221,18 +249,12 @@ func (c *Conn) dispatch(ctx context.Context, env *busv1.Envelope) {
 // does not block the caller: Close performs a close handshake that can take
 // several seconds waiting for the peer's acknowledgement, and a caller
 // replacing this connection with a new one (handleConnect, on a second
-// connection for the same agent id) must not stall on it. The blocked Read in
+// connection for the same agent id) must not stall on it. It funnels through
+// startClose, the same gate readLoop's own protocol-error path uses, so this
+// connection is never closed by two goroutines at once. The blocked Read in
 // this connection's own Run notices the close and returns on its own.
-//
-// ponytail: fire-and-forget close, not joined with this connection's own Run
-// since CloseWith is called from a different connection's goroutine; add a
-// done channel if a caller ever needs to know the handshake finished.
 func (c *Conn) CloseWith(code websocket.StatusCode, reason string) {
-	go func() {
-		if err := c.ws.Close(code, reason); err != nil {
-			slog.Debug("close handshake", "reason", reason, "err", err)
-		}
-	}()
+	c.startClose(code, reason)
 }
 
 func opensStream(env *busv1.Envelope) bool {
