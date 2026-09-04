@@ -120,6 +120,37 @@ func TestLargeResponseArrivesIntact(t *testing.T) {
 	}
 }
 
+// TestEarlyResponseSurvivesAnUnreadRequestBody covers a target that answers
+// before reading the request: the agent's transport abandons the upload while
+// the response is still streaming, and the response must survive that.
+//
+// The 8 MiB body is load-bearing. Anything small enough for the loopback
+// buffers and the server's own post-handler drain to swallow never makes the
+// pipe write fail, and the test then passes without reaching the branch it
+// exists for.
+func TestEarlyResponseSurvivesAnUnreadRequestBody(t *testing.T) {
+	env := testenv.Start(t)
+
+	payload := bytes.Repeat([]byte("x"), 8<<20)
+	resp, err := tunnelHTTP().Post(env.HubHTTPURL+"/a/"+env.AgentID+"/early",
+		"application/octet-stream", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := strings.Repeat("chunk\n", 5); string(body) != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+}
+
 func TestForwardedPrefixIsSet(t *testing.T) {
 	env := testenv.Start(t)
 

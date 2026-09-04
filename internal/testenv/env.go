@@ -128,6 +128,17 @@ func startAgentTarget(t *testing.T) string {
 	mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(BigResponse())
 	})
+	mux.HandleFunc("/early", func(w http.ResponseWriter, r *http.Request) {
+		// Answers without ever reading the request body, then streams slowly:
+		// the transport gives up on the upload while the response is still in
+		// flight, which is the window a cancelled context would lose.
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		for i := 0; i < 5; i++ {
+			_, _ = io.WriteString(w, "chunk\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	mux.HandleFunc("/teapot", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = io.WriteString(w, "no coffee here")
