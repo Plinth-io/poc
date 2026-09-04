@@ -209,13 +209,27 @@ func (a *Agent) isClosed() bool {
 	return a.closed
 }
 
-func (a *Agent) session() (context.Context, *bus.Conn) {
+// session returns the context and connection that own st, or a nil connection
+// if they no longer do. onOpen runs on a goroutine bus.Conn.dispatch spawned,
+// so the connection can end — and ConnectOnce clear it — before the stream is
+// ever served. A newer connection is no substitute either: its stream ids
+// belong to a different registry, so st is only served while it is still the
+// registered stream of the current connection.
+func (a *Agent) session(st *bus.Stream) (context.Context, *bus.Conn) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.ctx == nil {
-		return context.Background(), a.busConn
+	ctx, conn := a.ctx, a.busConn
+	a.mu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return a.ctx, a.busConn
+	if conn == nil {
+		return ctx, nil
+	}
+	if cur, ok := conn.Streams.Get(st.ID); !ok || cur != st {
+		return ctx, nil
+	}
+	return ctx, conn
 }
 
 // grpcConn lazily dials the local gRPC target. ForceCodec keeps the tunnelled
@@ -267,6 +281,16 @@ func (a *Agent) Close() {
 
 // onOpen handles a stream the hub opened.
 func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
+	// Both relays send on conn unconditionally, so the connection is checked
+	// here, once, before either of them ever sees it — a stream that opens
+	// while the connection is being torn down must end as a closed stream,
+	// not as a nil dereference that takes the whole agent down.
+	ctx, conn := a.session(st)
+	if conn == nil {
+		st.Close(errors.New("agent: connection ended before the stream started"))
+		return
+	}
+
 	switch p := env.GetPayload().(type) {
 	case *busv1.Envelope_RpcOpen:
 		cc, err := a.grpcConn()
@@ -275,7 +299,6 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 			st.Close(err)
 			return
 		}
-		ctx, conn := a.session()
 		relay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
 	case *busv1.Envelope_HttpOpen:
 		if a.isClosed() {
@@ -286,7 +309,6 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 			st.Close(errors.New("agent: no local HTTP target configured"))
 			return
 		}
-		ctx, conn := a.session()
 		relay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient)
 	default:
 		st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
