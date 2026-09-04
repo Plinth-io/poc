@@ -19,6 +19,11 @@ import (
 // TailActive counts in-flight Tail calls. Tests use it to prove that an
 // aborted Tail call actually returns instead of running to completion or
 // blocking forever.
+//
+// ponytail: one process-global counter, fine as long as Tail tests run
+// sequentially and drain their stream to EOF; give Tail a per-call counter
+// via a server constructor if a Tail test ever needs t.Parallel() or
+// concurrent Tail calls within one test.
 var TailActive atomic.Int32
 
 type server struct {

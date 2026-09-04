@@ -19,13 +19,11 @@ import (
 	"plinth.io/poc/internal/testenv"
 )
 
-// tunnelCtx bounds every streaming call with callTimeout (defined in
-// grpc_test.go), so a stalled relay fails the test instead of hanging it.
+// tunnelCtx is callCtx (grpc_test.go) pre-loaded with the agent id, so every
+// streaming call stays bound by the same callTimeout.
 func tunnelCtx(t *testing.T, env *testenv.Env) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	t.Cleanup(cancel)
-	return metadata.AppendToOutgoingContext(ctx, relay.AgentIDKey, env.AgentID)
+	return callCtx(t, relay.AgentIDKey, env.AgentID)
 }
 
 func TestServerStreamDeliversEveryMessageInOrder(t *testing.T) {
@@ -157,7 +155,7 @@ func TestAbortedServerStreamStopsTheAgentsLocalCall(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	ctx = metadata.AppendToOutgoingContext(ctx, relay.AgentIDKey, env.AgentID)
 
@@ -183,7 +181,7 @@ func TestAbortedServerStreamStopsTheAgentsLocalCall(t *testing.T) {
 	}
 }
 
-// TestConcurrentLargeChatMessagesDoNotAlias is the regression test for the
+// TestPipelinedLargeChatMessagesDoNotAlias is the regression test for the
 // slice-aliasing trap: bus.Chunks returns slices aliasing its input, and
 // rawcodec.Codec.Unmarshal reuses the receive buffer's backing array via
 // append(buf[:0], data...), so a `var msg []byte` hoisted out of the receive
@@ -193,7 +191,7 @@ func TestAbortedServerStreamStopsTheAgentsLocalCall(t *testing.T) {
 // replies in between — exercises both the caller-to-agent direction
 // (forwardRequests) and the agent-to-caller direction (pumpLocalToBus, which
 // forwards the demo service's own back-to-back echoes).
-func TestConcurrentLargeChatMessagesDoNotAlias(t *testing.T) {
+func TestPipelinedLargeChatMessagesDoNotAlias(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
