@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
@@ -20,6 +21,11 @@ const readLimit = 1 << 20
 // outboxSize bounds envelopes waiting for the single writer goroutine. A full
 // outbox blocks producers, which is the connection's backpressure.
 const outboxSize = 64
+
+// closeWait bounds how long Run waits for a started close handshake to reach
+// the wire: long enough for the frame to go out, short enough not to hold Run
+// hostage for a peer that never acks.
+const closeWait = 250 * time.Millisecond
 
 // ErrConnClosed reports that the underlying websocket is gone.
 var ErrConnClosed = errors.New("bus: connection closed")
@@ -39,6 +45,7 @@ type Conn struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+	closeDone chan struct{}
 
 	tapMu sync.RWMutex
 	tap   func(dir string, env *busv1.Envelope)
@@ -91,10 +98,12 @@ func (c *Conn) Run(ctx context.Context) error {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	var writeErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if err := c.writeLoop(ctx); err != nil {
+			writeErr = err
 			cancel()
 		}
 	}()
@@ -102,6 +111,19 @@ func (c *Conn) Run(ctx context.Context) error {
 	err := c.readLoop(ctx)
 	cancel()
 	wg.Wait()
+
+	// readLoop dying only because writeLoop's failure canceled the shared ctx
+	// masks the real cause; surface writeLoop's error instead.
+	if errors.Is(err, context.Canceled) && writeErr != nil {
+		err = writeErr
+	}
+
+	if c.closeDone != nil {
+		select {
+		case <-c.closeDone:
+		case <-time.After(closeWait):
+		}
+	}
 
 	c.closeOnce.Do(func() { close(c.closed) })
 	c.Streams.CloseAll(fmt.Errorf("%w: %v", ErrConnClosed, err))
@@ -127,10 +149,17 @@ func (c *Conn) writeLoop(ctx context.Context) error {
 }
 
 // closeProtocolError starts the close handshake with StatusProtocolError but
-// does not wait for it: Close performs a close handshake with a fixed
-// internal timeout, and a peer that never acks must not hold Run hostage.
+// does not block readLoop on it: Close performs a close handshake with a
+// fixed internal timeout, and a peer that never acks must not hold Run
+// hostage. Run still gives it up to closeWait before returning.
+//
+// ponytail: close handshake detached, join it if a caller ever needs the fd
+// released the moment Run returns.
 func (c *Conn) closeProtocolError(reason string) {
+	c.closeDone = make(chan struct{})
+	done := c.closeDone
 	go func() {
+		defer close(done)
 		if err := c.ws.Close(websocket.StatusProtocolError, reason); err != nil {
 			slog.Debug("close handshake after protocol error", "reason", reason, "err", err)
 		}

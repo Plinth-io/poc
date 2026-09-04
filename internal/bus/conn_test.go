@@ -95,7 +95,12 @@ func TestEnvelopeForKnownStreamLandsInInbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Send open: %v", err)
 	}
-	peerStream := <-ready
+	var peerStream *bus.Stream
+	select {
+	case peerStream = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peer never opened the stream")
+	}
 
 	if err := agent.Send(context.Background(), &busv1.Envelope{
 		StreamId: peerStream.ID,
@@ -117,7 +122,10 @@ func TestEnvelopeForKnownStreamLandsInInbox(t *testing.T) {
 func TestEnvelopeForUnknownStreamIsDropped(t *testing.T) {
 	// A late envelope after a cancel is normal and must not kill the
 	// connection; only a malformed envelope is fatal.
-	hub, _ := pair(t, nil)
+	opened := make(chan *busv1.Envelope, 1)
+	hub, _ := pair(t, func(_ *bus.Stream, env *busv1.Envelope) {
+		opened <- env
+	})
 
 	if err := hub.Send(context.Background(), &busv1.Envelope{
 		StreamId: 999,
@@ -130,7 +138,19 @@ func TestEnvelopeForUnknownStreamIsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open after stray envelope: %v", err)
 	}
-	if st.ID == 0 {
+	if err := hub.Send(context.Background(), &busv1.Envelope{
+		StreamId: st.ID,
+		Payload:  &busv1.Envelope_RpcOpen{RpcOpen: &busv1.RpcOpen{Method: "/x/Y"}},
+	}); err != nil {
+		t.Fatalf("Send open: %v", err)
+	}
+
+	select {
+	case got := <-opened:
+		if got.StreamId != st.ID {
+			t.Fatalf("stream id = %d, want %d", got.StreamId, st.ID)
+		}
+	case <-time.After(2 * time.Second):
 		t.Fatal("connection unusable after a stray envelope")
 	}
 }
