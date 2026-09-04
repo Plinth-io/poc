@@ -31,6 +31,10 @@ type Hub struct {
 }
 
 func New(cfg Config) *Hub {
+	// Config.Tokens can be built by hand, bypassing ParseTokens' guarantees;
+	// an empty key would otherwise match the empty token bearerToken trims a
+	// bare "Bearer " down to.
+	delete(cfg.Tokens, "")
 	return &Hub{tokens: cfg.Tokens, agents: newAgents()}
 }
 
@@ -74,18 +78,25 @@ func (h *Hub) handleConnect(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("websocket upgrade failed", "agent_id", agentID, "err", err)
 		return
 	}
+	// net/http does not close a hijacked connection on its own, and the normal
+	// teardown here is the peer vanishing without a close frame (the agent's
+	// own defer is CloseNow, which sends none either) — so conn.Run returning
+	// leaves the fd open unless something closes it explicitly. CloseNow after
+	// an already-closed websocket is a no-op, so this covers every path below
+	// harmlessly, including the two explicit rejections.
+	defer ws.CloseNow()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	hello, err := readHello(ctx, ws)
 	if err != nil {
-		ws.Close(websocket.StatusProtocolError, "expected hello")
+		closeAsync(ws, websocket.StatusProtocolError, "expected hello")
 		slog.Warn("no hello received", "agent_id", agentID, "err", err)
 		return
 	}
 	if hello.GetAgentId() != agentID {
-		ws.Close(websocket.StatusPolicyViolation, "agent id does not match token")
+		closeAsync(ws, websocket.StatusPolicyViolation, "agent id does not match token")
 		slog.Warn("hello claims a foreign agent id",
 			"token_agent_id", agentID, "claimed", hello.GetAgentId())
 		return
@@ -107,6 +118,19 @@ func (h *Hub) handleConnect(w http.ResponseWriter, r *http.Request) {
 	slog.Info("agent connected", "agent_id", agentID, "version", ag.Version)
 	err = conn.Run(ctx)
 	slog.Info("agent disconnected", "agent_id", agentID, "err", err)
+}
+
+// closeAsync starts the close handshake without blocking the caller, the same
+// way bus.Conn.CloseWith does: Close can take several seconds waiting for the
+// peer's acknowledgement, and a rejected connection must not tie up the
+// handler goroutine for that long — a stream of bad tokens would otherwise be
+// a cheap way to occupy handlers.
+func closeAsync(ws *websocket.Conn, code websocket.StatusCode, reason string) {
+	go func() {
+		if err := ws.Close(code, reason); err != nil {
+			slog.Debug("close handshake", "reason", reason, "err", err)
+		}
+	}()
 }
 
 // readHello consumes the first envelope, which must be a hello. It runs before

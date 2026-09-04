@@ -1,6 +1,10 @@
 package hub
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestParseTokens(t *testing.T) {
 	tests := []struct {
@@ -44,6 +48,32 @@ func TestParseTokens(t *testing.T) {
 				if got[k] != v {
 					t.Fatalf("got[%q] = %q, want %q", k, got[k], v)
 				}
+			}
+		})
+	}
+}
+
+func TestBearerToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+		wantOk bool
+	}{
+		{name: "absent header", header: "", want: "", wantOk: false},
+		{name: "wrong scheme", header: "Basic dXNlcjpwYXNz", want: "", wantOk: false},
+		{name: "bearer with nothing after", header: "Bearer ", want: "", wantOk: false},
+		{name: "valid bearer token", header: "Bearer secret1", want: "secret1", wantOk: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			got, ok := bearerToken(req)
+			if ok != tc.wantOk || got != tc.want {
+				t.Fatalf("bearerToken() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOk)
 			}
 		})
 	}

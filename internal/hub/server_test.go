@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"plinth.io/poc/internal/agent"
 	"plinth.io/poc/internal/hub"
 )
@@ -24,7 +26,10 @@ func startHub(t *testing.T) (*hub.Hub, string) {
 	return h, "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent/connect"
 }
 
-func connectAgent(t *testing.T, ctx context.Context, wsURL, token, agentID string) {
+// connectAgent dials the hub in the background and returns a buffered channel
+// carrying ConnectOnce's eventual error, so callers that care how the
+// connection ended (e.g. which close status the hub sent) can wait for it.
+func connectAgent(t *testing.T, ctx context.Context, wsURL, token, agentID string) <-chan error {
 	t.Helper()
 	a := agent.New(agent.Config{
 		HubURL:  wsURL,
@@ -32,7 +37,9 @@ func connectAgent(t *testing.T, ctx context.Context, wsURL, token, agentID strin
 		AgentID: agentID,
 		Version: "test",
 	})
-	go func() { _ = a.ConnectOnce(ctx) }()
+	done := make(chan error, 1)
+	go func() { done <- a.ConnectOnce(ctx) }()
+	return done
 }
 
 func waitForAgent(t *testing.T, h *hub.Hub, id string) *hub.Agent {
@@ -65,9 +72,12 @@ func TestUnknownTokenIsRejectedBeforeUpgrade(t *testing.T) {
 	_, wsURL := startHub(t)
 	httpURL := "http" + strings.TrimPrefix(wsURL, "ws")
 
-	req, err := http.NewRequest(http.MethodGet, httpURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpURL, nil)
 	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
+		t.Fatalf("NewRequestWithContext: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer wrong")
 	resp, err := http.DefaultClient.Do(req)
@@ -87,9 +97,18 @@ func TestHelloWithForeignAgentIDIsRejected(t *testing.T) {
 
 	h, wsURL := startHub(t)
 	// Valid token for mac-1, but the agent claims to be someone else.
-	connectAgent(t, ctx, wsURL, "secret1", "build-2")
+	done := connectAgent(t, ctx, wsURL, "secret1", "build-2")
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-done:
+		if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+			t.Fatalf("ConnectOnce err = %v (close status %v), want close status %v",
+				err, got, websocket.StatusPolicyViolation)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub never closed the connection with a mismatching hello")
+	}
+
 	if _, ok := h.Agents().Get("build-2"); ok {
 		t.Fatal("agent registered under an id its token does not own")
 	}
