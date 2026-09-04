@@ -30,8 +30,32 @@ func TestCallerDeadlineEndsTheCall(t *testing.T) {
 			if status.Code(err) != codes.DeadlineExceeded {
 				t.Fatalf("Code = %v, want %v", status.Code(err), codes.DeadlineExceeded)
 			}
-			return
+			break
 		}
+	}
+
+	// The hub side must drop the stream, and the agent's local Tail call must
+	// actually stop — not just report DeadlineExceeded to the caller. Bounded
+	// well below callTimeout, not callTimeout itself: the same deadline that
+	// just expired for the caller was also carried to the agent in RpcOpen,
+	// so a leaked local call would self-heal at roughly the same moment
+	// anyway — a callTimeout-bound poll could never fail for the reason it
+	// exists, only pass slower. This also drains demo.TailActive back to 0
+	// before it is read by TestCallerCancelStopsTheAgentSideStream and
+	// TestAgentDisconnectFailsRunningCallsWithUnavailable, which need it at 0
+	// on entry since it is a process-global counter.
+	ag, ok := env.Hub.Agents().Get(env.AgentID)
+	if !ok {
+		t.Fatal("agent vanished")
+	}
+	const cleanupBound = 1 * time.Second
+	deadline := time.Now().Add(cleanupBound)
+	for ag.Conn.Streams.Len() > 0 || demo.TailActive.Load() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("streams=%d TailActive=%d after the deadline expired",
+				ag.Conn.Streams.Len(), demo.TailActive.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -131,7 +155,14 @@ func TestAgentDisconnectFailsRunningCallsWithUnavailable(t *testing.T) {
 	// The agent side must stop its local call too, not just report the
 	// disconnect to the caller — otherwise the demo service's Tail keeps
 	// running unnoticed after the tunnel is gone.
-	deadline := time.Now().Add(callTimeout)
+	//
+	// Bounded well below callTimeout, not callTimeout itself: the caller's
+	// original deadline (from tunnelCtx) was also carried to the agent in
+	// RpcOpen, so a leaked local call would self-heal at that same deadline
+	// anyway — a callTimeout-bound poll could never fail for the reason it
+	// exists, only pass slower.
+	const cleanupBound = 1 * time.Second
+	deadline := time.Now().Add(cleanupBound)
 	for demo.TailActive.Load() > 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("agent's local Tail call is still running after the connection died")

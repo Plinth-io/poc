@@ -172,7 +172,13 @@ func TestAbortedServerStreamStopsTheAgentsLocalCall(t *testing.T) {
 
 	cancel() // the caller goes away mid-stream
 
-	deadline := time.Now().Add(callTimeout)
+	// Bounded well below callTimeout, not callTimeout itself: ctx here also
+	// carries callTimeout as its own deadline, serialized to the agent via
+	// RpcOpen, so a leaked local call would self-heal at that same deadline
+	// anyway — a callTimeout-bound poll could never fail for the reason it
+	// exists, only pass slower.
+	const cleanupBound = 1 * time.Second
+	deadline := time.Now().Add(cleanupBound)
 	for demo.TailActive.Load() > 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("agent's local Tail call is still running after the caller went away")
