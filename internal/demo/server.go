@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -14,6 +15,11 @@ import (
 
 	demov1 "plinth.io/poc/gen/demo/v1"
 )
+
+// TailActive counts in-flight Tail calls. Tests use it to prove that an
+// aborted Tail call actually returns instead of running to completion or
+// blocking forever.
+var TailActive atomic.Int32
 
 type server struct {
 	demov1.UnimplementedDemoServer
@@ -29,6 +35,8 @@ func (s *server) Echo(_ context.Context, req *demov1.EchoRequest) (*demov1.EchoR
 }
 
 func (s *server) Tail(req *demov1.TailRequest, stream demov1.Demo_TailServer) error {
+	TailActive.Add(1)
+	defer TailActive.Add(-1)
 	for i := int32(0); i < req.GetLines(); i++ {
 		if err := stream.Send(&demov1.TailChunk{Index: i, Line: fmt.Sprintf("line %d", i)}); err != nil {
 			return err

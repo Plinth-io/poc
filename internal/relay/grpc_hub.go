@@ -26,9 +26,16 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 	// The named return lets the deferred recover turn a panic into a failed
 	// call instead of a dead hub process.
 	return func(_ any, ss grpc.ServerStream) (err error) {
+		// conn and st are declared here, above the recover, so a panic after
+		// the stream is open can still tell the agent to abandon the call.
+		var conn *bus.Conn
+		var st *bus.Stream
 		defer func() {
 			if r := recover(); r != nil {
 				err = status.Errorf(codes.Internal, "relay panic: %v", r)
+				if st != nil {
+					cancelAgent(conn, st, err.Error())
+				}
 			}
 		}()
 
@@ -41,12 +48,12 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 		if len(ids) == 0 || ids[0] == "" {
 			return status.Errorf(codes.InvalidArgument, "missing %s metadata", AgentIDKey)
 		}
-		conn, ok := l.Lookup(ids[0])
+		conn, ok = l.Lookup(ids[0])
 		if !ok {
 			return status.Errorf(codes.Unavailable, "agent %q is not connected", ids[0])
 		}
 
-		st, err := conn.Streams.Open()
+		st, err = conn.Streams.Open()
 		if err != nil {
 			return status.Error(codes.ResourceExhausted, err.Error())
 		}
