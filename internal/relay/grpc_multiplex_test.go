@@ -1,6 +1,7 @@
 package relay_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,7 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	busv1 "plinth.io/poc/gen/bus/v1"
 	demov1 "plinth.io/poc/gen/demo/v1"
+	"plinth.io/poc/internal/bus"
 	"plinth.io/poc/internal/demo"
 	"plinth.io/poc/internal/testenv"
 )
@@ -65,12 +71,42 @@ func TestFiftyConcurrentStreamsStayIndependent(t *testing.T) {
 	}
 }
 
+// smallCallBound is how long a small Echo call may take while a large one
+// shares the connection. Measured over repeated runs, a correctly interleaved
+// small call lands well under 15ms (the first one, racing the large call's
+// own first chunks, is the slowest observed at ~12ms); this bound leaves a
+// large margin over that noise while staying an order of magnitude under
+// callTimeout, so a design that serializes large and small traffic instead of
+// interleaving their chunks has no way to sneak under it.
+const smallCallBound = 500 * time.Millisecond
+
 // TestConcurrentLargeAndSmallCallsDoNotStarveEachOther proves that a call
 // spanning many chunks does not block the single writer goroutine long
 // enough to stall unrelated calls sharing the same connection.
 func TestConcurrentLargeAndSmallCallsDoNotStarveEachOther(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
+
+	ag, ok := env.Hub.Agents().Get(env.AgentID)
+	if !ok {
+		t.Fatal("agent not registered")
+	}
+
+	// The tap fires for every envelope the hub writes to the agent. A
+	// multi-chunk RpcMsg (More is only set on non-final chunks) can only
+	// belong to the large request, so it is the signal that the large call
+	// is genuinely in flight rather than merely scheduled.
+	bigInFlight := make(chan struct{})
+	var once sync.Once
+	ag.Conn.SetTap(func(dir string, e *busv1.Envelope) {
+		if dir != "out" {
+			return
+		}
+		if m, ok := e.GetPayload().(*busv1.Envelope_RpcMsg); ok && m.RpcMsg.GetMore() {
+			once.Do(func() { close(bigInFlight) })
+		}
+	})
+	t.Cleanup(func() { ag.Conn.SetTap(nil) })
 
 	padding := make([]byte, 2<<20) // 2 MiB, many chunks
 	done := make(chan error, 1)
@@ -79,10 +115,20 @@ func TestConcurrentLargeAndSmallCallsDoNotStarveEachOther(t *testing.T) {
 		done <- err
 	}()
 
-	// While the large call travels, small calls must still complete.
+	select {
+	case <-bigInFlight:
+	case <-time.After(callTimeout):
+		t.Fatal("large call never started chunking")
+	}
+
+	// While the large call travels, small calls must still complete quickly,
+	// not merely "before callTimeout" — see smallCallBound.
 	for i := 0; i < 20; i++ {
-		if _, err := client.Echo(tunnelCtx(t, env), &demov1.EchoRequest{Text: "small"}); err != nil {
-			t.Fatalf("small call %d starved: %v", i, err)
+		ctx, cancel := context.WithTimeout(tunnelCtx(t, env), smallCallBound)
+		_, err := client.Echo(ctx, &demov1.EchoRequest{Text: "small"})
+		cancel()
+		if err != nil {
+			t.Fatalf("small call %d starved (bound %v): %v", i, smallCallBound, err)
 		}
 	}
 	if err := <-done; err != nil {
@@ -100,25 +146,34 @@ func TestStreamLimitIsEnforced(t *testing.T) {
 	var opened []demov1.Demo_ChatClient
 	defer func() { drainChatStreams(t, opened) }()
 
-	var refused bool
+	var refusal error
 	for i := 0; i < 300; i++ {
 		stream, err := client.Chat(tunnelCtx(t, env))
 		if err != nil {
-			refused = true
+			refusal = err
 			break
 		}
 		if err := stream.Send(&demov1.ChatMessage{Text: "hold"}); err != nil {
-			refused = true
+			refusal = err
 			break
 		}
 		if _, err := stream.Recv(); err != nil {
-			refused = true
+			refusal = err
 			break
 		}
 		opened = append(opened, stream)
 	}
-	if !refused {
+	if refusal == nil {
 		t.Fatal("no refusal after 300 concurrent streams, limit not enforced")
+	}
+	// A wrong code (e.g. from the payload-too-large path in grpc_hub.go) or a
+	// refusal at the wrong count would both pass a bare "something failed"
+	// check; a raised or broken limit must fail this one instead.
+	if status.Code(refusal) != codes.ResourceExhausted {
+		t.Fatalf("refusal code = %v, want %v (err: %v)", status.Code(refusal), codes.ResourceExhausted, refusal)
+	}
+	if len(opened) != bus.MaxStreams {
+		t.Fatalf("opened %d streams before refusal, want %d (bus.MaxStreams)", len(opened), bus.MaxStreams)
 	}
 }
 
