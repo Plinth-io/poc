@@ -25,8 +25,14 @@ import (
 const (
 	defaultMinBackoff = 500 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
-	pingInterval      = 15 * time.Second
-	pingTimeout       = 30 * time.Second
+)
+
+// pingInterval and pingTimeout are vars, not consts, so a test can shrink them
+// to make a ping failure observable in well under a second instead of the
+// production ~55s worst case.
+var (
+	pingInterval = 15 * time.Second
+	pingTimeout  = 30 * time.Second
 )
 
 type Config struct {
@@ -113,7 +119,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		b.min = defaultMinBackoff
 	}
 	if b.max < b.min {
-		b.max = defaultMaxBackoff
+		b.max = max(defaultMaxBackoff, b.min)
 	}
 
 	var delay time.Duration

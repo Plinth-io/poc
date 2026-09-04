@@ -39,10 +39,7 @@ func TestAgentReconnectsAfterTheHubDropsIt(t *testing.T) {
 	first := waitForAgentConn(t, h, "mac-1", nil)
 	first.Conn.CloseWith(websocket.StatusNormalClosure, "test drops the connection")
 
-	second := waitForAgentConn(t, h, "mac-1", first)
-	if second == first {
-		t.Fatal("agent did not reconnect")
-	}
+	waitForAgentConn(t, h, "mac-1", first)
 }
 
 func newHTTPTestServer(t *testing.T, h http.Handler) *httptest.Server {
