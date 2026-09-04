@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,6 +34,7 @@ type Agent struct {
 	cfg Config
 
 	mu      sync.Mutex
+	closed  bool
 	grpcCC  *grpc.ClientConn
 	busConn *bus.Conn
 	ctx     context.Context
@@ -117,6 +119,9 @@ func (a *Agent) session() (context.Context, *bus.Conn) {
 func (a *Agent) grpcConn() (*grpc.ClientConn, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.closed {
+		return nil, errClosed
+	}
 	if a.grpcCC != nil {
 		return a.grpcCC, nil
 	}
@@ -131,11 +136,16 @@ func (a *Agent) grpcConn() (*grpc.ClientConn, error) {
 	return cc, nil
 }
 
+// errClosed rejects work that arrives after Close, so a late stream cannot
+// revive the connection to the local target.
+var errClosed = errors.New("agent: closed")
+
 // Close releases the connection to the local target. It deliberately leaves
 // the websocket alone: from bus.NewConn onward the bus.Conn owns that socket.
 func (a *Agent) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.closed = true
 	if a.grpcCC != nil {
 		_ = a.grpcCC.Close()
 		a.grpcCC = nil

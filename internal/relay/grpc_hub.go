@@ -110,30 +110,42 @@ func forwardResponses(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) erro
 	for {
 		select {
 		case <-ss.Context().Done():
-			_ = conn.Send(context.Background(), &busv1.Envelope{StreamId: st.ID,
-				Payload: &busv1.Envelope_RpcCancel{RpcCancel: &busv1.RpcCancel{Reason: "caller cancelled"}}})
+			cancelAgent(conn, st, "caller cancelled")
 			return status.FromContextError(ss.Context().Err()).Err()
 
 		case <-st.Done():
+			// No cancel here: the bus connection is what died, so there is
+			// nobody left to tell.
+			//
+			// ponytail: a status the agent had already queued in st.In can be
+			// lost to a simultaneous connection death, turning a real code
+			// into Unavailable. Drain st.In non-blockingly before returning if
+			// that ever needs to be exact.
 			return status.Error(codes.Unavailable, "connection to agent lost")
 
 		case env := <-st.In:
 			switch p := env.GetPayload().(type) {
 			case *busv1.Envelope_RpcHead:
 				if err := ss.SetHeader(MDFromHeaders(p.RpcHead.GetMetadata())); err != nil {
+					cancelAgent(conn, st, err.Error())
 					return err
 				}
 			case *busv1.Envelope_RpcMsg:
 				payload, complete, err := re.Add(p.RpcMsg.GetPayload(), p.RpcMsg.GetMore())
 				if err != nil {
+					cancelAgent(conn, st, err.Error())
 					return status.Error(codes.ResourceExhausted, err.Error())
 				}
 				if complete {
 					if err := ss.SendMsg(&payload); err != nil {
+						cancelAgent(conn, st, err.Error())
 						return err
 					}
 				}
 			case *busv1.Envelope_RpcEnd:
+				// No cancel on either exit below: the agent sent its final
+				// status and closed its own stream, so it has nothing left to
+				// abandon.
 				ss.SetTrailer(MDFromHeaders(p.RpcEnd.GetTrailer()))
 				if codes.Code(p.RpcEnd.GetCode()) == codes.OK {
 					return nil
@@ -142,4 +154,15 @@ func forwardResponses(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) erro
 			}
 		}
 	}
+}
+
+// cancelAgent tells the agent to abandon the call. Every abnormal exit of
+// forwardResponses has to send it: the handler's st.Close stops draining
+// st.In right after, so without a cancel the agent's pumps stay parked and its
+// local call runs on unnoticed. The only exception is a dead bus connection,
+// where there is no peer left to reach. It uses a background context on
+// purpose, since the caller's context is usually the thing that just expired.
+func cancelAgent(conn *bus.Conn, st *bus.Stream, reason string) {
+	_ = conn.Send(context.Background(), &busv1.Envelope{StreamId: st.ID,
+		Payload: &busv1.Envelope_RpcCancel{RpcCancel: &busv1.RpcCancel{Reason: reason}}})
 }

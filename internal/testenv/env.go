@@ -6,7 +6,6 @@ package testenv
 import (
 	"context"
 	"net"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -44,7 +43,7 @@ func Start(t *testing.T) *Env {
 	demoAddr := startDemoService(t)
 	h, httpSrv := startHub(t)
 	grpcAddr := startHubGRPC(t, h)
-	startAgent(t, ctx, httpSrv.URL, demoAddr)
+	agentErr := startAgent(t, ctx, httpSrv.URL, demoAddr)
 
 	env := &Env{
 		Hub:          h,
@@ -53,7 +52,7 @@ func Start(t *testing.T) *Env {
 		AgentID:      testAgentID,
 		DemoGRPCAddr: demoAddr,
 	}
-	waitForAgent(t, h)
+	waitForAgent(t, h, agentErr)
 	return env
 }
 
@@ -118,7 +117,9 @@ func startHubGRPC(t *testing.T, h *hub.Hub) string {
 	return lis.Addr().String()
 }
 
-func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr string) {
+// startAgent returns the channel ConnectOnce's result lands in, so a failed
+// dial, auth or hello shows up as itself instead of as a registration timeout.
+func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr string) <-chan error {
 	t.Helper()
 	a := agent.New(agent.Config{
 		HubURL:     "ws" + strings.TrimPrefix(hubHTTPURL, "http") + "/agent/connect",
@@ -127,20 +128,24 @@ func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr string) 
 		Version:    "test",
 		GRPCTarget: demoAddr,
 	})
-	go func() { _ = a.ConnectOnce(ctx) }()
+	errc := make(chan error, 1)
+	go func() { errc <- a.ConnectOnce(ctx) }()
 	t.Cleanup(func() { a.Close() })
+	return errc
 }
 
-func waitForAgent(t *testing.T, h *hub.Hub) {
+func waitForAgent(t *testing.T, h *hub.Hub, agentErr <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, ok := h.Agents().Get(testAgentID); ok {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case err := <-agentErr:
+			t.Fatalf("agent stopped before registering: %v", err)
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 	t.Fatal("agent never registered with the hub")
 }
-
-var _ = http.StatusOK // keeps net/http imported for later tasks

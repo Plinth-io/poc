@@ -33,14 +33,14 @@ func ServeRPC(parent context.Context, st *bus.Stream, conn *bus.Conn, open *busv
 
 	defer func() {
 		if r := recover(); r != nil {
-			sendEnd(context.Background(), conn, st, status.Errorf(codes.Internal, "relay panic: %v", r), nil)
+			sendEnd(conn, st, status.Errorf(codes.Internal, "relay panic: %v", r), nil)
 			st.Close(nil)
 		}
 	}()
 
 	cs, err := cc.NewStream(ctx, rpcDesc, open.GetMethod())
 	if err != nil {
-		sendEnd(ctx, conn, st, err, nil)
+		sendEnd(conn, st, err, nil)
 		st.Close(nil)
 		return
 	}
@@ -99,7 +99,7 @@ func pumpLocalToBus(ctx context.Context, conn *bus.Conn, st *bus.Stream, cs grpc
 			if errors.Is(err, io.EOF) {
 				err = nil
 			}
-			sendEnd(ctx, conn, st, err, cs.Trailer())
+			sendEnd(conn, st, err, cs.Trailer())
 			return
 		}
 		chunks := bus.Chunks(msg)
@@ -114,9 +114,12 @@ func pumpLocalToBus(ctx context.Context, conn *bus.Conn, st *bus.Stream, cs grpc
 	}
 }
 
-func sendEnd(ctx context.Context, conn *bus.Conn, st *bus.Stream, err error, trailer metadata.MD) {
+// sendEnd reports the final status of the local call. It deliberately sends on
+// a background context: the call's own context is usually the thing that just
+// expired, and the hub still needs the status.
+func sendEnd(conn *bus.Conn, st *bus.Stream, err error, trailer metadata.MD) {
 	st2 := status.Convert(err)
-	_ = conn.Send(ctx, &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_RpcEnd{
+	_ = conn.Send(context.Background(), &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_RpcEnd{
 		RpcEnd: &busv1.RpcEnd{
 			Code:    int32(st2.Code()),
 			Message: st2.Message(),
