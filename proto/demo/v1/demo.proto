@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package demo.v1;
+
+// Demo is the tunnelled example service. Neither hub nor agent imports this
+// schema — it exists only for the endpoints and the tests.
+service Demo {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Tail(TailRequest) returns (stream TailChunk);
+  rpc Chat(stream ChatMessage) returns (stream ChatMessage);
+  rpc Fail(FailRequest) returns (FailResponse);
+}
+
+message EchoRequest {
+  string text = 1;
+  bytes padding = 2;
+}
+
+message EchoResponse {
+  string text = 1;
+  int64 padding_bytes = 2;
+}
+
+message TailRequest {
+  int32 lines = 1;
+}
+
+message TailChunk {
+  int32 index = 1;
+  string line = 2;
+}
+
+message ChatMessage {
+  string text = 1;
+}
+
+message FailRequest {
+  string reason = 1;
+}
+
+message FailResponse {}
