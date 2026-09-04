@@ -41,6 +41,8 @@ func (a *Agent) UIHandler(logs *LogBuffer) http.Handler {
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		st := a.Status()
+		// Since shadows the embedded Status.Since (a time.Time), so
+		// {{.Since}} in the template resolves to this formatted string.
 		data := struct {
 			Status
 			Base  string
