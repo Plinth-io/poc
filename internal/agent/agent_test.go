@@ -34,6 +34,15 @@ func TestKeepaliveClosesConnectionAfterAMissedPong(t *testing.T) {
 	pingInterval, pingTimeout = 20*time.Millisecond, 50*time.Millisecond
 	t.Cleanup(func() { pingInterval, pingTimeout = origInterval, origTimeout })
 
+	// A hijacked connection's r.Context() is not cancelled by an abrupt
+	// client-side close, so the handler cannot rely on it to return.
+	// stopHandler is closed by t.Cleanup instead, guaranteeing the handler
+	// goroutine (and, via the deferred CloseNow, its socket) always exits
+	// with the test. It is registered after srv.Close below, so cleanup's
+	// LIFO order closes stopHandler — and with it the handler's socket —
+	// before srv.Close runs.
+	stopHandler := make(chan struct{})
+
 	helloRead := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent/connect", func(w http.ResponseWriter, r *http.Request) {
@@ -47,12 +56,15 @@ func TestKeepaliveClosesConnectionAfterAMissedPong(t *testing.T) {
 		}
 		close(helloRead)
 		// Stop reading: no further Read call means no automatic pong, however
-		// many pings the agent sends. Block here so the hijacked connection
-		// stays open until the client side tears it down.
-		<-r.Context().Done()
+		// many pings the agent sends.
+		select {
+		case <-r.Context().Done():
+		case <-stopHandler:
+		}
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(stopHandler) })
 
 	a := New(Config{
 		HubURL:  "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent/connect",
