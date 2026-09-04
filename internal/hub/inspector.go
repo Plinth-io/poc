@@ -9,6 +9,12 @@ import (
 	busv1 "plinth.io/poc/gen/bus/v1"
 )
 
+// inspectorQueue bounds how far a UI subscriber may lag before it loses
+// events.
+//
+// ponytail: dropping is the whole policy — a stalled browser tab must never
+// slow the bus down. Per-subscriber replay is the upgrade if anyone needs
+// gap-free events.
 const inspectorQueue = 128
 
 // Event is one envelope as the UI shows it. Payloads stay out on purpose —

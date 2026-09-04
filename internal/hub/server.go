@@ -25,9 +25,14 @@ type Config struct {
 	Tokens map[string]string // token -> agent id
 }
 
+// inspectorCapacity bounds how many past envelopes the hub UI can show on
+// load; live updates arrive over /events/stream regardless of this size.
+const inspectorCapacity = 500
+
 type Hub struct {
-	tokens map[string]string
-	agents *Agents
+	tokens    map[string]string
+	agents    *Agents
+	inspector *Inspector
 
 	mu     sync.RWMutex
 	onOpen bus.OpenFunc
@@ -38,10 +43,13 @@ func New(cfg Config) *Hub {
 	// an empty key would otherwise match the empty token bearerToken trims a
 	// bare "Bearer " down to.
 	delete(cfg.Tokens, "")
-	return &Hub{tokens: cfg.Tokens, agents: newAgents()}
+	return &Hub{tokens: cfg.Tokens, agents: newAgents(), inspector: NewInspector(inspectorCapacity)}
 }
 
 func (h *Hub) Agents() *Agents { return h.agents }
+
+// Inspector gives the UI access to the live envelope feed.
+func (h *Hub) Inspector() *Inspector { return h.inspector }
 
 // SetOpenFunc installs the handler for streams an agent opens towards the hub.
 func (h *Hub) SetOpenFunc(f bus.OpenFunc) {
@@ -58,6 +66,8 @@ func (h *Hub) openFunc() bus.OpenFunc {
 
 func (h *Hub) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", h.handleIndex)
+	mux.HandleFunc("GET /events/stream", h.handleEventStream)
 	mux.HandleFunc("/agent/connect", h.handleConnect)
 	mux.Handle("/a/{id}/", relay.HubHTTP(h.agents))
 	return mux
@@ -105,6 +115,9 @@ func (h *Hub) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := bus.NewConn(ws, bus.SideHub, h.openFunc())
+	conn.SetTap(func(dir string, env *busv1.Envelope) {
+		h.inspector.Record(agentID, dir, env)
+	})
 	ag := &Agent{
 		ID:      agentID,
 		Conn:    conn,

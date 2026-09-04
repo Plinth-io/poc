@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Hub</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; }
+  table { border-collapse: collapse; margin-bottom: 2rem; }
+  th, td { text-align: left; padding: .25rem 1.5rem .25rem 0; border-bottom: 1px solid #eee; }
+  #events { max-height: 60vh; overflow: auto; }
+</style>
+<h1>Verbundene Agents</h1>
+<table>
+  <tr><th>ID</th><th>Version</th><th>Verbunden seit</th><th>Aktive Streams</th><th></th></tr>
+  {{range .Agents}}
+  <tr>
+    <td>{{.ID}}</td><td>{{.Version}}</td><td>{{.Since}}</td><td>{{.Streams}}</td>
+    <td><a href="/a/{{.ID}}/">UI öffnen</a></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5">keine</td></tr>
+  {{end}}
+</table>
+
+<h2>Envelopes</h2>
+<table id="events">
+  <tr><th>Zeit</th><th>Agent</th><th>Richtung</th><th>Stream</th><th>Typ</th><th>Bytes</th></tr>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+  const rows = document.getElementById("rows");
+  const es = new EventSource("/events/stream");
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    const tr = document.createElement("tr");
+    for (const v of [ev.At, ev.AgentID, ev.Dir, ev.StreamID, ev.Kind, ev.Size]) {
+      const td = document.createElement("td");
+      td.textContent = v;
+      tr.appendChild(td);
+    }
+    rows.prepend(tr);
+    while (rows.children.length > 200) rows.lastChild.remove();
+  };
+</script>
