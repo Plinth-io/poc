@@ -72,7 +72,6 @@ func (a *Agent) ConnectOnce(ctx context.Context) error {
 	// ws:// hub this token travels in the clear along with everything else.
 	// The upgrade is a wss:// URL, which needs no code change here — it is
 	// required the moment the hub is not localhost.
-
 	ws, _, err := websocket.Dial(ctx, a.cfg.HubURL, &websocket.DialOptions{
 		HTTPHeader:      header,
 		CompressionMode: websocket.CompressionDisabled,
