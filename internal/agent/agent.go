@@ -137,13 +137,12 @@ func (a *Agent) grpcConn() (*grpc.ClientConn, error) {
 }
 
 // httpClient talks to the local target. Redirects are not followed, so the
-// caller sees the target's own 3xx response.
-func httpClient() *http.Client {
-	return &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+// caller sees the target's own 3xx response. One shared client is enough: its
+// zero Transport means every tunnelled request reuses http.DefaultTransport.
+var httpClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // errClosed rejects work that arrives after Close, so a late stream cannot
@@ -180,7 +179,7 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 			return
 		}
 		ctx, conn := a.session()
-		relay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient())
+		relay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient)
 	default:
 		st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
 	}
