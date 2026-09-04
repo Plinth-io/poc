@@ -42,6 +42,13 @@ func connectAgent(t *testing.T, ctx context.Context, wsURL, token, agentID strin
 	return done
 }
 
+func contextWithCancel(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx, cancel
+}
+
 func waitForAgent(t *testing.T, h *hub.Hub, id string) *hub.Agent {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
