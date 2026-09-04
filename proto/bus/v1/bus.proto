@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package bus.v1;
+
+// Envelope is one message on the multiplexed bus. stream_id splits the single
+// websocket into independent logical streams; the hub allocates odd ids, the
+// agent even ones, so the spaces never collide.
+message Envelope {
+  uint64 stream_id = 1;
+
+  oneof payload {
+    Hello hello = 2;
+
+    RpcOpen rpc_open = 10;
+    RpcMsg rpc_msg = 11;
+    RpcHalfClose rpc_half_close = 12;
+    RpcHead rpc_head = 13;
+    RpcEnd rpc_end = 14;
+    RpcCancel rpc_cancel = 15;
+
+    HttpOpen http_open = 20;
+    HttpBody http_body = 21;
+    HttpEnd http_end = 22;
+    HttpResponseHead http_response_head = 23;
+    HttpResponseBody http_response_body = 24;
+    HttpResponseEnd http_response_end = 25;
+    HttpCancel http_cancel = 26;
+  }
+}
+
+// Header carries metadata values as bytes because gRPC "-bin" keys hold
+// arbitrary binary data.
+message Header {
+  string key = 1;
+  repeated bytes values = 2;
+}
+
+message Hello {
+  string agent_id = 1;
+  string version = 2;
+  repeated string targets = 3;
+}
+
+message RpcOpen {
+  string method = 1;
+  repeated Header metadata = 2;
+  int64 timeout_nanos = 3;
+}
+
+// RpcMsg carries one chunk of a gRPC message. more=true means further chunks
+// belong to the same message.
+message RpcMsg {
+  bytes payload = 1;
+  bool more = 2;
+}
+
+message RpcHalfClose {}
+
+message RpcHead {
+  repeated Header metadata = 1;
+}
+
+message RpcEnd {
+  int32 code = 1;
+  string message = 2;
+  repeated Header trailer = 3;
+}
+
+message RpcCancel {
+  string reason = 1;
+}
+
+message HttpOpen {
+  string method = 1;
+  string uri = 2;
+  repeated Header headers = 3;
+}
+
+message HttpBody {
+  bytes chunk = 1;
+}
+
+message HttpEnd {}
+
+message HttpResponseHead {
+  int32 status = 1;
+  repeated Header headers = 2;
+}
+
+message HttpResponseBody {
+  bytes chunk = 1;
+}
+
+// HttpResponseEnd closes a tunnelled response. A non-empty error means the
+// agent could not finish reading from its local target.
+message HttpResponseEnd {
+  string error = 1;
+}
+
+message HttpCancel {
+  string reason = 1;
+}
