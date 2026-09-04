@@ -136,6 +136,16 @@ func (a *Agent) grpcConn() (*grpc.ClientConn, error) {
 	return cc, nil
 }
 
+// httpClient talks to the local target. Redirects are not followed, so the
+// caller sees the target's own 3xx response.
+func httpClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // errClosed rejects work that arrives after Close, so a late stream cannot
 // revive the connection to the local target.
 var errClosed = errors.New("agent: closed")
@@ -152,7 +162,7 @@ func (a *Agent) Close() {
 	}
 }
 
-// onOpen handles a stream the hub opened. Task 11 adds the HTTP branch.
+// onOpen handles a stream the hub opened.
 func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 	switch p := env.GetPayload().(type) {
 	case *busv1.Envelope_RpcOpen:
@@ -164,6 +174,13 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 		}
 		ctx, conn := a.session()
 		relay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
+	case *busv1.Envelope_HttpOpen:
+		if a.cfg.HTTPTarget == "" {
+			st.Close(errors.New("agent: no local HTTP target configured"))
+			return
+		}
+		ctx, conn := a.session()
+		relay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient())
 	default:
 		st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
 	}

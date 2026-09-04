@@ -5,7 +5,10 @@ package testenv
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -19,6 +22,7 @@ import (
 	"plinth.io/poc/internal/agent"
 	"plinth.io/poc/internal/demo"
 	"plinth.io/poc/internal/hub"
+	"plinth.io/poc/internal/relay"
 )
 
 const (
@@ -27,11 +31,12 @@ const (
 )
 
 type Env struct {
-	Hub          *hub.Hub
-	HubGRPCAddr  string
-	HubHTTPURL   string
-	AgentID      string
-	DemoGRPCAddr string
+	Hub                *hub.Hub
+	HubGRPCAddr        string
+	HubHTTPURL         string
+	AgentID            string
+	DemoGRPCAddr       string
+	AgentHTTPTargetURL string
 }
 
 // Start brings the whole chain up and tears it down with the test.
@@ -41,16 +46,18 @@ func Start(t *testing.T) *Env {
 	t.Cleanup(cancel)
 
 	demoAddr := startDemoService(t)
+	targetURL := startAgentTarget(t)
 	h, httpSrv := startHub(t)
 	grpcAddr := startHubGRPC(t, h)
-	agentErr := startAgent(t, ctx, httpSrv.URL, demoAddr)
+	agentErr := startAgent(t, ctx, httpSrv.URL, demoAddr, targetURL)
 
 	env := &Env{
-		Hub:          h,
-		HubGRPCAddr:  grpcAddr,
-		HubHTTPURL:   httpSrv.URL,
-		AgentID:      testAgentID,
-		DemoGRPCAddr: demoAddr,
+		Hub:                h,
+		HubGRPCAddr:        grpcAddr,
+		HubHTTPURL:         httpSrv.URL,
+		AgentID:            testAgentID,
+		DemoGRPCAddr:       demoAddr,
+		AgentHTTPTargetURL: targetURL,
 	}
 	waitForAgent(t, h, agentErr)
 	return env
@@ -93,6 +100,40 @@ func echoCallerHeader(ctx context.Context, req any, _ *grpc.UnaryServerInfo, han
 	return handler(ctx, req)
 }
 
+// startAgentTarget is the plain HTTP service the agent tunnels to. It shares
+// nothing with the demo gRPC service: the two prove the same bus carries
+// unrelated protocols.
+func startAgentTarget(t *testing.T) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Target", "agent")
+		w.Header().Set("X-Caller-Seen", r.Header.Get("X-Caller"))
+		_, _ = io.WriteString(w, "hello from the agent target")
+	})
+	mux.HandleFunc("/echo/path", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.URL.RequestURI())
+	})
+	mux.HandleFunc("/size", func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, n)
+	})
+	mux.HandleFunc("/prefix", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.Header.Get(relay.ForwardedPrefixHeader))
+	})
+	mux.HandleFunc("/teapot", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = io.WriteString(w, "no coffee here")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 func startHub(t *testing.T) (*hub.Hub, *httptest.Server) {
 	t.Helper()
 	tokens, err := hub.ParseTokens(testAgentID + ":" + testToken)
@@ -119,7 +160,7 @@ func startHubGRPC(t *testing.T, h *hub.Hub) string {
 
 // startAgent returns the channel ConnectOnce's result lands in, so a failed
 // dial, auth or hello shows up as itself instead of as a registration timeout.
-func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr string) <-chan error {
+func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr, httpTarget string) <-chan error {
 	t.Helper()
 	a := agent.New(agent.Config{
 		HubURL:     "ws" + strings.TrimPrefix(hubHTTPURL, "http") + "/agent/connect",
@@ -127,6 +168,7 @@ func startAgent(t *testing.T, ctx context.Context, hubHTTPURL, demoAddr string) 
 		AgentID:    testAgentID,
 		Version:    "test",
 		GRPCTarget: demoAddr,
+		HTTPTarget: httpTarget,
 	})
 	errc := make(chan error, 1)
 	go func() { errc <- a.ConnectOnce(ctx) }()

@@ -59,6 +59,7 @@ func (h *Hub) openFunc() bus.OpenFunc {
 func (h *Hub) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent/connect", h.handleConnect)
+	mux.Handle("/a/{id}/", relay.HubHTTP(h.agents))
 	return mux
 }
 
