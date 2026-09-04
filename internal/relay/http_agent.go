@@ -88,8 +88,14 @@ func pumpHTTPRequestBody(ctx context.Context, cancel context.CancelFunc, st *bus
 			case *busv1.Envelope_HttpBody:
 				if bodyOpen {
 					if _, err := pw.Write(p.HttpBody.GetChunk()); err != nil {
-						cancel()
-						return
+						// The transport gave up on the request body, which is
+						// what happens when the target answers before reading
+						// it. That response is still valid, so the loop only
+						// stops feeding the pipe — cancelling here would abort
+						// the response instead. It keeps draining st.In as
+						// well: an undrained inbox blocks the connection's
+						// single read loop, and with it every other stream.
+						bodyOpen = false
 					}
 				}
 			case *busv1.Envelope_HttpEnd:
@@ -111,12 +117,18 @@ func pumpHTTPRequestBody(ctx context.Context, cancel context.CancelFunc, st *bus
 
 // sendResponseEnd reports the end of the local response. A non-empty message
 // means the agent could not finish reading from its target.
+//
+// It strips the cancellation from ctx on purpose, the same way sendEnd does
+// for gRPC: the request context is usually the very thing that just ended, and
+// Conn.Send selects over the outbox and ctx.Done() at once, so a cancelled ctx
+// would drop this envelope at random. Without it the hub waits for a terminal
+// envelope that never comes.
 func sendResponseEnd(ctx context.Context, conn *bus.Conn, st *bus.Stream, err error) {
 	var msg string
 	if err != nil {
 		msg = err.Error()
 	}
-	_ = conn.Send(ctx, &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_HttpResponseEnd{
+	_ = conn.Send(context.WithoutCancel(ctx), &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_HttpResponseEnd{
 		HttpResponseEnd: &busv1.HttpResponseEnd{Error: msg},
 	}})
 }

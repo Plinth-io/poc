@@ -26,10 +26,14 @@ func HubHTTP(l Lookup) http.Handler {
 		}
 		defer st.Close(nil)
 
-		prefix := "/a/" + agentID
-		uri := strings.TrimPrefix(r.URL.RequestURI(), prefix)
-		if uri == "" {
-			uri = "/"
+		// Split the escaped path by segment rather than trimming the decoded
+		// id: "/a/mac%2d1/hello" resolves to the registered id "mac-1", so a
+		// prefix built from the decoded id would not match the raw URI.
+		escID, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.EscapedPath(), "/a/"), "/")
+		prefix := "/a/" + escID
+		uri := "/" + rest
+		if r.URL.RawQuery != "" {
+			uri += "?" + r.URL.RawQuery
 		}
 
 		// Dropped before conversion so a client cannot smuggle in its own
@@ -49,13 +53,19 @@ func HubHTTP(l Lookup) http.Handler {
 			return
 		}
 
-		go forwardHTTPRequestBody(r, conn, st)
+		// net/http declares the request invalid once the handler returns and
+		// closes the body itself, so the pump has to be joined here rather
+		// than left to race that close. It ends when the client's body ends,
+		// which the server would wait for anyway before reusing the socket.
+		done := make(chan struct{})
+		go forwardHTTPRequestBody(r, conn, st, done)
 		relayHTTPResponse(w, r, conn, st)
+		<-done
 	})
 }
 
-func forwardHTTPRequestBody(r *http.Request, conn *bus.Conn, st *bus.Stream) {
-	defer r.Body.Close()
+func forwardHTTPRequestBody(r *http.Request, conn *bus.Conn, st *bus.Stream, done chan struct{}) {
+	defer close(done)
 	buf := make([]byte, bus.MaxChunk)
 	for {
 		n, err := r.Body.Read(buf)
@@ -103,12 +113,23 @@ func relayHTTPResponse(w http.ResponseWriter, r *http.Request, conn *bus.Conn, s
 		case env := <-st.In:
 			switch p := env.GetPayload().(type) {
 			case *busv1.Envelope_HttpResponseHead:
+				if wroteHead {
+					continue
+				}
+				// WriteHeader panics outside this range, so a peer with an
+				// unset or bogus status field must not reach it.
+				code := int(p.HttpResponseHead.GetStatus())
+				if code < 100 || code > 999 {
+					cancelUpstream("agent sent an invalid status")
+					http.Error(w, "agent sent an invalid status", http.StatusBadGateway)
+					return
+				}
 				for k, vs := range HTTPFromHeaders(p.HttpResponseHead.GetHeaders()) {
 					for _, v := range vs {
 						w.Header().Add(k, v)
 					}
 				}
-				w.WriteHeader(int(p.HttpResponseHead.GetStatus()))
+				w.WriteHeader(code)
 				wroteHead = true
 				if flusher != nil {
 					flusher.Flush()
@@ -119,6 +140,7 @@ func relayHTTPResponse(w http.ResponseWriter, r *http.Request, conn *bus.Conn, s
 					cancelUpstream("write to client failed")
 					return
 				}
+				wroteHead = true
 				// Flushing per chunk is what makes a live stream arrive at all
 				// instead of a page that never finishes loading.
 				if flusher != nil {
@@ -126,6 +148,10 @@ func relayHTTPResponse(w http.ResponseWriter, r *http.Request, conn *bus.Conn, s
 				}
 
 			case *busv1.Envelope_HttpResponseEnd:
+				// An error that arrives after the head is unreportable: the
+				// status line is already on the wire and HTTP/1.1 has no
+				// trailer the client would read. Such a response ends as a
+				// clean EOF, truncated but indistinguishable from complete.
 				if !wroteHead {
 					if msg := p.HttpResponseEnd.GetError(); msg != "" {
 						http.Error(w, msg, http.StatusBadGateway)

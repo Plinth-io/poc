@@ -105,6 +105,14 @@ func (a *Agent) setConn(ctx context.Context, c *bus.Conn) {
 	a.mu.Unlock()
 }
 
+// isClosed reports whether Close has run, so both branches of onOpen refuse
+// late work instead of only the gRPC one.
+func (a *Agent) isClosed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
+}
+
 func (a *Agent) session() (context.Context, *bus.Conn) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -174,6 +182,10 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 		ctx, conn := a.session()
 		relay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
 	case *busv1.Envelope_HttpOpen:
+		if a.isClosed() {
+			st.Close(errClosed)
+			return
+		}
 		if a.cfg.HTTPTarget == "" {
 			st.Close(errors.New("agent: no local HTTP target configured"))
 			return

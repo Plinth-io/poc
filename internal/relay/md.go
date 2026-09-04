@@ -57,6 +57,11 @@ func MDFromHeaders(hs []*busv1.Header) metadata.MD {
 const ForwardedPrefixHeader = "X-Forwarded-Prefix"
 
 // hopByHop headers describe one TCP hop and must not be relayed.
+//
+// ponytail: dropping Upgrade means a websocket the target offers degrades to a
+// plain response instead of failing loudly. Handling it needs the hub to
+// hijack the client connection and a pair of bus envelopes for the raw byte
+// stream — worth building once a target actually needs websockets.
 var hopByHop = map[string]bool{
 	"Connection":        true,
 	"Keep-Alive":        true,
