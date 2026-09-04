@@ -26,6 +26,11 @@ import (
 // concurrent Tail calls within one test.
 var TailActive atomic.Int32
 
+// ChatActive counts in-flight Chat calls, for the same reason as TailActive:
+// tests use it to prove a stalled bidirectional call actually returns instead
+// of blocking forever once its underlying connection is gone.
+var ChatActive atomic.Int32
+
 type server struct {
 	demov1.UnimplementedDemoServer
 }
@@ -51,6 +56,8 @@ func (s *server) Tail(req *demov1.TailRequest, stream demov1.Demo_TailServer) er
 }
 
 func (s *server) Chat(stream demov1.Demo_ChatServer) error {
+	ChatActive.Add(1)
+	defer ChatActive.Add(-1)
 	for {
 		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
