@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "gRPC and HTTP through one outbound WebSocket",
+    "locale": "en",
+    "output": "tunnel-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1300,
+      520
+    ],
+    "views": [
+      {
+        "id": "tunnelled-grpc",
+        "label": "A tunnelled gRPC call",
+        "focus": [
+          "caller",
+          "hubgrpc",
+          "bus",
+          "agent",
+          "demosvc"
+        ],
+        "note": "Any method reaches the local service without either relay knowing its schema."
+      },
+      {
+        "id": "ui-through-tunnel",
+        "label": "Agent UI through the tunnel",
+        "focus": [
+          "caller",
+          "hubhttp",
+          "bus",
+          "agent",
+          "agentui"
+        ],
+        "note": "The same bus carries plain HTTP, including a response that never ends."
+      },
+      {
+        "id": "how-it-connects",
+        "label": "How the connection is made",
+        "focus": [
+          "agent",
+          "bus",
+          "hubhttp",
+          "auth"
+        ],
+        "note": "The agent dials out; the hub never connects inward."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Callers",
+      "sublabel": "grpcurl · browser",
+      "tag": "not authenticated",
+      "pos": [
+        40,
+        186
+      ],
+      "size": [
+        140,
+        66
+      ]
+    },
+    {
+      "id": "hubgrpc",
+      "type": "backend",
+      "label": "Hub gRPC",
+      "sublabel": "127.0.0.1:7000",
+      "tag": "any method, raw bytes",
+      "pos": [
+        270,
+        70
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "hubhttp",
+      "type": "backend",
+      "label": "Hub HTTP",
+      "sublabel": "127.0.0.1:7001",
+      "tag": "UI · /a/{id}/ · /agent/connect",
+      "pos": [
+        270,
+        220
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "Token auth",
+      "sublabel": "Bearer at the upgrade",
+      "tag": "token maps to agent id",
+      "pos": [
+        270,
+        380
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "bus",
+      "type": "messagebus",
+      "label": "Envelope bus",
+      "sublabel": "one WebSocket · stream_id",
+      "pos": [
+        560,
+        220
+      ],
+      "size": [
+        190,
+        74
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent",
+      "sublabel": "no inbound listener",
+      "pos": [
+        850,
+        220
+      ],
+      "size": [
+        160,
+        66
+      ]
+    },
+    {
+      "id": "demosvc",
+      "type": "backend",
+      "label": "Demo service",
+      "sublabel": "127.0.0.1:50052",
+      "pos": [
+        1080,
+        90
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "agentui",
+      "type": "frontend",
+      "label": "Agent UI",
+      "sublabel": "127.0.0.1:8090",
+      "tag": "live logs over SSE",
+      "pos": [
+        1080,
+        350
+      ],
+      "size": [
+        180,
+        66
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Hub host",
+      "wraps": [
+        "hubgrpc",
+        "hubhttp",
+        "auth"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Private machine · behind NAT",
+      "wraps": [
+        "agent",
+        "demosvc",
+        "agentui"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "loopback only :7000 / :7001",
+      "wraps": [
+        "hubgrpc",
+        "hubhttp"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "call-grpc",
+      "from": "caller",
+      "to": "hubgrpc",
+      "label": "gRPC + x-agent-id",
+      "variant": "emphasis"
+    },
+    {
+      "id": "call-http",
+      "from": "caller",
+      "to": "hubhttp",
+      "label": "HTTP /a/{id}/"
+    },
+    {
+      "id": "grpc-envelopes",
+      "from": "hubgrpc",
+      "to": "bus",
+      "label": "rpc_open · rpc_msg",
+      "toSide": "top"
+    },
+    {
+      "id": "http-envelopes",
+      "from": "hubhttp",
+      "to": "bus",
+      "label": "http_open · http_body"
+    },
+    {
+      "id": "dials-out",
+      "from": "agent",
+      "to": "bus",
+      "label": "dials out, holds it open",
+      "variant": "emphasis",
+      "labelDy": -27
+    },
+    {
+      "id": "token-gate",
+      "from": "auth",
+      "to": "bus",
+      "label": "verified before the upgrade",
+      "variant": "security"
+    },
+    {
+      "id": "local-grpc",
+      "from": "agent",
+      "to": "demosvc",
+      "label": "gRPC on loopback"
+    },
+    {
+      "id": "local-http",
+      "from": "agent",
+      "to": "agentui",
+      "label": "HTTP on loopback"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "The bus",
+      "items": [
+        "One WebSocket carries tagged envelopes, each with a stream_id",
+        "gRPC and HTTP are two independent users of it; the bus knows neither",
+        "Payloads chunk at 64 KiB so one large message cannot block the others"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Why it works through NAT",
+      "items": [
+        "The agent opens the connection; the hub never connects inward",
+        "No inbound listener and no port forwarding on the private machine",
+        "On a drop the agent reconnects with backoff; calls in flight end as UNAVAILABLE"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Schema-free relay",
+      "items": [
+        "The hub accepts any method via UnknownServiceHandler",
+        "A passthrough codec reports its name as \"proto\", so payload bytes are never touched",
+        "Neither hub nor agent imports the tunnelled service's schema"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security posture",
+      "items": [
+        "The agent's Bearer token is checked before the WebSocket upgrade",
+        "Callers are not authenticated: both hub listeners bind to 127.0.0.1 by default",
+        "The link is ws:// by default — TLS is required before the hub leaves localhost"
+      ]
+    }
+  ]
+}
