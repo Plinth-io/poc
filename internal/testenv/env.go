@@ -23,7 +23,7 @@ import (
 	"plinth.io/poc/internal/agent"
 	"plinth.io/poc/internal/demo"
 	"plinth.io/poc/internal/hub"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/wire"
 )
 
 const (
@@ -142,7 +142,7 @@ func startAgentTarget(t *testing.T) string {
 		fmt.Fprint(w, n)
 	})
 	mux.HandleFunc("/prefix", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, r.Header.Get(relay.ForwardedPrefixHeader))
+		_, _ = io.WriteString(w, r.Header.Get(wire.ForwardedPrefixHeader))
 	})
 	mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(BigResponse())

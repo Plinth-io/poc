@@ -1,4 +1,4 @@
-package relay
+package wire
 
 import (
 	"net/http"

@@ -1,4 +1,4 @@
-package relay
+package hubrelay
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/relay/wire"
 )
 
 // HubHTTP serves /a/{id}/… by tunnelling the request to that agent's local
@@ -38,10 +39,10 @@ func HubHTTP(l Lookup) http.Handler {
 
 		// Dropped before conversion so a client cannot smuggle in its own
 		// prefix and make the target emit links to somewhere else.
-		r.Header.Del(ForwardedPrefixHeader)
-		headers := HeadersFromHTTP(r.Header)
+		r.Header.Del(wire.ForwardedPrefixHeader)
+		headers := wire.HeadersFromHTTP(r.Header)
 		headers = append(headers, &busv1.Header{
-			Key:    ForwardedPrefixHeader,
+			Key:    wire.ForwardedPrefixHeader,
 			Values: [][]byte{[]byte(prefix)},
 		})
 
@@ -124,7 +125,7 @@ func relayHTTPResponse(w http.ResponseWriter, r *http.Request, conn *bus.Conn, s
 					http.Error(w, "agent sent an invalid status", http.StatusBadGateway)
 					return
 				}
-				for k, vs := range HTTPFromHeaders(p.HttpResponseHead.GetHeaders()) {
+				for k, vs := range wire.HTTPFromHeaders(p.HttpResponseHead.GetHeaders()) {
 					for _, v := range vs {
 						w.Header().Add(k, v)
 					}

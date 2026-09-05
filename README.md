@@ -30,13 +30,28 @@ by hand; the PoC itself uses neither at runtime — and no Docker.
 
 ## How it is put together
 
-`internal/bus` carries tagged envelopes with a `stream_id` over one WebSocket
-and knows nothing about gRPC or HTTP. `internal/relay` holds its two users.
-The gRPC relay passes raw message bytes through, which is why any gRPC service
-is tunnelable without a code change.
+![Callers reach the hub over gRPC and HTTP; the agent opens the WebSocket outbound from behind NAT, and both relays share one envelope bus](docs/diagrams/tunnel-architecture.png)
 
-Design and deliberate omissions (in German):
-`docs/superpowers/specs/2026-09-04-grpc-over-websocket-tunnel-design.md`
+`internal/bus` carries tagged envelopes with a `stream_id` over one WebSocket
+and knows nothing about gRPC or HTTP. `internal/relay` holds its two users,
+split so neither half can reach into the other:
+
+    internal/relay/wire         what both halves share
+    internal/relay/hubrelay     accepts callers, puts their calls on the bus
+    internal/relay/agentrelay   takes calls off the bus, replays them locally
+
+The gRPC relay passes raw message bytes through, which is why any gRPC service
+is tunnelable without a code change. The hub and agent binaries link only their
+own half; `internal/relay/boundary_test.go` fails if that ever stops being true.
+
+Note the arrow between agent and bus: it points against the flow of traffic.
+Calls travel from the caller through the hub to the agent, but the *connection*
+is opened by the agent — which is what lets this work through NAT with no
+inbound listener on the private machine.
+
+The image is a still. `docs/diagrams/tunnel-architecture.html` is the same
+diagram interactively, with light and dark themes, relationship tracing and
+three guided views.
 
 ## Limits
 

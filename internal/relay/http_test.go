@@ -15,7 +15,8 @@ import (
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/agentrelay"
+	"plinth.io/poc/internal/relay/hubrelay"
 	"plinth.io/poc/internal/testenv"
 )
 
@@ -254,7 +255,7 @@ func fakeAgent(t *testing.T, reply func(conn *bus.Conn, st *bus.Stream, open *bu
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/a/{id}/", relay.HubHTTP(stubLookup{conn: conn}))
+	mux.Handle("/a/{id}/", hubrelay.HubHTTP(stubLookup{conn: conn}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -306,7 +307,7 @@ func fakeHub(t *testing.T, target string) *bus.Conn {
 		}
 		var agentConn *bus.Conn
 		agentConn = bus.NewConn(ws, bus.SideAgent, func(st *bus.Stream, env *busv1.Envelope) {
-			relay.ServeHTTPStream(r.Context(), st, agentConn, env.GetHttpOpen(), target, tunnelHTTP())
+			agentrelay.ServeHTTPStream(r.Context(), st, agentConn, env.GetHttpOpen(), target, tunnelHTTP())
 		})
 		_ = agentConn.Run(r.Context())
 	}))

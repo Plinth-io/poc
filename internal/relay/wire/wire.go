@@ -1,6 +1,7 @@
-// Package relay bridges gRPC and HTTP onto the envelope bus. It is the only
-// place that knows both worlds; the bus itself knows neither.
-package relay
+// Package wire holds what the hub-side and agent-side relays both need:
+// the routing key, the forwarded-prefix header, and the conversions between
+// Go's metadata/header types and the envelope's Header messages.
+package wire
 
 import (
 	"net/http"

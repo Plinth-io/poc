@@ -1,4 +1,4 @@
-package relay
+package agentrelay
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/relay/wire"
 )
 
 // rpcDesc describes every tunnelled call as fully bidirectional. The real
@@ -30,7 +31,7 @@ func ServeRPC(parent context.Context, st *bus.Stream, conn *bus.Conn, open *busv
 		ctx, stop = context.WithTimeout(ctx, time.Duration(d))
 		defer stop()
 	}
-	ctx = metadata.NewOutgoingContext(ctx, MDFromHeaders(open.GetMetadata()))
+	ctx = metadata.NewOutgoingContext(ctx, wire.MDFromHeaders(open.GetMetadata()))
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -98,7 +99,7 @@ func pumpBusToLocal(ctx context.Context, cancel context.CancelFunc, st *bus.Stre
 func pumpLocalToBus(ctx context.Context, conn *bus.Conn, st *bus.Stream, cs grpc.ClientStream) {
 	if hd, err := cs.Header(); err == nil {
 		_ = conn.Send(ctx, &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_RpcHead{
-			RpcHead: &busv1.RpcHead{Metadata: HeadersFromMD(hd)},
+			RpcHead: &busv1.RpcHead{Metadata: wire.HeadersFromMD(hd)},
 		}})
 	}
 	for {
@@ -134,7 +135,7 @@ func sendEnd(conn *bus.Conn, st *bus.Stream, err error, trailer metadata.MD) {
 		RpcEnd: &busv1.RpcEnd{
 			Code:    int32(st2.Code()),
 			Message: st2.Message(),
-			Trailer: HeadersFromMD(trailer),
+			Trailer: wire.HeadersFromMD(trailer),
 		},
 	}})
 }

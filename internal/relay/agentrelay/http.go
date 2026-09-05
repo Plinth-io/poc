@@ -1,4 +1,4 @@
-package relay
+package agentrelay
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/relay/wire"
 )
 
 // ServeHTTPStream runs one tunnelled HTTP request against the agent's local
@@ -44,7 +45,7 @@ func ServeHTTPStream(parent context.Context, st *bus.Stream, conn *bus.Conn, ope
 		sendResponseEnd(ctx, conn, st, err)
 		return
 	}
-	req.Header = HTTPFromHeaders(open.GetHeaders())
+	req.Header = wire.HTTPFromHeaders(open.GetHeaders())
 
 	go pumpHTTPRequestBody(ctx, cancel, st, pw)
 
@@ -58,7 +59,7 @@ func ServeHTTPStream(parent context.Context, st *bus.Stream, conn *bus.Conn, ope
 	head := &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_HttpResponseHead{
 		HttpResponseHead: &busv1.HttpResponseHead{
 			Status:  int32(resp.StatusCode),
-			Headers: HeadersFromHTTP(resp.Header),
+			Headers: wire.HeadersFromHTTP(resp.Header),
 		},
 	}}
 	if err := conn.Send(ctx, head); err != nil {

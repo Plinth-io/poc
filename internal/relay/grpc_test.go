@@ -15,7 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	demov1 "plinth.io/poc/gen/demo/v1"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/hubrelay"
+	"plinth.io/poc/internal/relay/wire"
 	"plinth.io/poc/internal/testenv"
 )
 
@@ -34,7 +35,7 @@ func TestUnaryCallReachesTheLocalService(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
-	ctx := callCtx(t, relay.AgentIDKey, env.AgentID)
+	ctx := callCtx(t, wire.AgentIDKey, env.AgentID)
 	got, err := client.Echo(ctx, &demov1.EchoRequest{Text: "durch den tunnel"})
 	if err != nil {
 		t.Fatalf("Echo: %v", err)
@@ -58,7 +59,7 @@ func TestCallForUnknownAgentIsUnavailable(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
-	ctx := callCtx(t, relay.AgentIDKey, "does-not-exist")
+	ctx := callCtx(t, wire.AgentIDKey, "does-not-exist")
 	_, err := client.Echo(ctx, &demov1.EchoRequest{Text: "x"})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("Code = %v, want %v", status.Code(err), codes.Unavailable)
@@ -69,7 +70,7 @@ func TestRequestMetadataArrivesAtTheService(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
-	ctx := callCtx(t, relay.AgentIDKey, env.AgentID, "x-caller", "integration-test")
+	ctx := callCtx(t, wire.AgentIDKey, env.AgentID, "x-caller", "integration-test")
 	// The demo service is wrapped in an interceptor that copies x-caller into
 	// the response header, so one call proves both directions.
 	var header metadata.MD
@@ -89,7 +90,7 @@ func TestServiceErrorAndTrailerTravelBack(t *testing.T) {
 	env := testenv.Start(t)
 	client := demov1.NewDemoClient(env.Dial(t))
 
-	ctx := callCtx(t, relay.AgentIDKey, env.AgentID)
+	ctx := callCtx(t, wire.AgentIDKey, env.AgentID)
 	var trailer metadata.MD
 	_, err := client.Fail(ctx, &demov1.FailRequest{Reason: "so gewollt"}, grpc.Trailer(&trailer))
 	if status.Code(err) != codes.FailedPrecondition {
@@ -111,7 +112,7 @@ func TestLargeRequestIsChunkedAndReassembled(t *testing.T) {
 	client := demov1.NewDemoClient(env.Dial(t))
 
 	padding := bytes.Repeat([]byte{0xab}, 200<<10)
-	ctx := callCtx(t, relay.AgentIDKey, env.AgentID)
+	ctx := callCtx(t, wire.AgentIDKey, env.AgentID)
 	got, err := client.Echo(ctx, &demov1.EchoRequest{Text: "gross", Padding: padding})
 	if err != nil {
 		t.Fatalf("Echo: %v", err)
@@ -138,7 +139,7 @@ func TestConcurrentCallsStayOnTheirOwnStream(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			want := fmt.Sprintf("call-%d", i)
-			ctx := callCtx(t, relay.AgentIDKey, env.AgentID)
+			ctx := callCtx(t, wire.AgentIDKey, env.AgentID)
 			got, err := client.Echo(ctx, &demov1.EchoRequest{Text: want})
 			if err != nil {
 				errs <- fmt.Errorf("%s: %w", want, err)
@@ -186,9 +187,9 @@ func TestAnAlreadyExpiredDeadlineIsRefused(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	ctx = grpc.NewContextWithServerTransportStream(ctx, &transportStream{method: "/demo.v1.Demo/Echo"})
-	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(relay.AgentIDKey, "mac-1"))
+	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(wire.AgentIDKey, "mac-1"))
 
-	err := relay.HubGRPC(stubLookup{conn: nil})(nil, expiredStream{ctx: ctx})
+	err := hubrelay.HubGRPC(stubLookup{conn: nil})(nil, expiredStream{ctx: ctx})
 	if status.Code(err) != codes.DeadlineExceeded {
 		t.Fatalf("Code = %v (%v), want %v", status.Code(err), err, codes.DeadlineExceeded)
 	}

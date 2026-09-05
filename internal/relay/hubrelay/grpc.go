@@ -1,4 +1,4 @@
-package relay
+package hubrelay
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
+	"plinth.io/poc/internal/relay/wire"
 )
 
 // Lookup resolves an agent id to its bus connection.
@@ -45,9 +46,9 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 			return status.Error(codes.Internal, "cannot determine method")
 		}
 		md, _ := metadata.FromIncomingContext(ss.Context())
-		ids := md.Get(AgentIDKey)
+		ids := md.Get(wire.AgentIDKey)
 		if len(ids) == 0 || ids[0] == "" {
-			return status.Errorf(codes.InvalidArgument, "missing %s metadata", AgentIDKey)
+			return status.Errorf(codes.InvalidArgument, "missing %s metadata", wire.AgentIDKey)
 		}
 		conn, ok = l.Lookup(ids[0])
 		if !ok {
@@ -74,7 +75,7 @@ func HubGRPC(l Lookup) grpc.StreamHandler {
 		open := &busv1.Envelope{StreamId: st.ID, Payload: &busv1.Envelope_RpcOpen{
 			RpcOpen: &busv1.RpcOpen{
 				Method:       method,
-				Metadata:     HeadersFromMD(md),
+				Metadata:     wire.HeadersFromMD(md),
 				TimeoutNanos: timeout,
 			},
 		}}
@@ -163,7 +164,7 @@ func forwardResponses(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) erro
 		case env := <-st.In:
 			switch p := env.GetPayload().(type) {
 			case *busv1.Envelope_RpcHead:
-				if err := ss.SetHeader(MDFromHeaders(p.RpcHead.GetMetadata())); err != nil {
+				if err := ss.SetHeader(wire.MDFromHeaders(p.RpcHead.GetMetadata())); err != nil {
 					cancelAgent(conn, st, err.Error())
 					return err
 				}
@@ -183,7 +184,7 @@ func forwardResponses(ss grpc.ServerStream, conn *bus.Conn, st *bus.Stream) erro
 				// No cancel on either exit below: the agent sent its final
 				// status and closed its own stream, so it has nothing left to
 				// abandon.
-				ss.SetTrailer(MDFromHeaders(p.RpcEnd.GetTrailer()))
+				ss.SetTrailer(wire.MDFromHeaders(p.RpcEnd.GetTrailer()))
 				if codes.Code(p.RpcEnd.GetCode()) == codes.OK {
 					return nil
 				}

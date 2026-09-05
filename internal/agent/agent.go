@@ -19,7 +19,7 @@ import (
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
 	"plinth.io/poc/internal/rawcodec"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/agentrelay"
 )
 
 const (
@@ -307,7 +307,7 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 			st.Close(err)
 			return
 		}
-		relay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
+		agentrelay.ServeRPC(ctx, st, conn, p.RpcOpen, cc)
 	case *busv1.Envelope_HttpOpen:
 		if a.isClosed() {
 			st.Close(errClosed)
@@ -317,7 +317,7 @@ func (a *Agent) onOpen(st *bus.Stream, env *busv1.Envelope) {
 			st.Close(errors.New("agent: no local HTTP target configured"))
 			return
 		}
-		relay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient)
+		agentrelay.ServeHTTPStream(ctx, st, conn, p.HttpOpen, a.cfg.HTTPTarget, httpClient)
 	default:
 		st.Close(fmt.Errorf("agent: no handler for %T", env.GetPayload()))
 	}

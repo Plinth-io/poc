@@ -15,7 +15,7 @@ import (
 	busv1 "plinth.io/poc/gen/bus/v1"
 	"plinth.io/poc/internal/bus"
 	"plinth.io/poc/internal/rawcodec"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/hubrelay"
 )
 
 // helloTimeout bounds how long a freshly upgraded connection may stay silent.
@@ -81,7 +81,7 @@ func (h *Hub) Mux() *http.ServeMux {
 	mux.HandleFunc("GET /{$}", h.handleIndex)
 	mux.HandleFunc("GET /events/stream", h.handleEventStream)
 	mux.HandleFunc("/agent/connect", h.handleConnect)
-	mux.Handle("/a/{id}/", relay.HubHTTP(h.agents))
+	mux.Handle("/a/{id}/", hubrelay.HubHTTP(h.agents))
 	return mux
 }
 
@@ -231,6 +231,6 @@ func readHello(ctx context.Context, ws *websocket.Conn) (*busv1.Hello, error) {
 func (h *Hub) GRPCServer() *grpc.Server {
 	return grpc.NewServer(
 		grpc.ForceServerCodec(rawcodec.Codec{}),
-		grpc.UnknownServiceHandler(relay.HubGRPC(h.agents)),
+		grpc.UnknownServiceHandler(hubrelay.HubGRPC(h.agents)),
 	)
 }

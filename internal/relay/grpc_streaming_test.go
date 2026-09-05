@@ -15,7 +15,7 @@ import (
 
 	demov1 "plinth.io/poc/gen/demo/v1"
 	"plinth.io/poc/internal/demo"
-	"plinth.io/poc/internal/relay"
+	"plinth.io/poc/internal/relay/wire"
 	"plinth.io/poc/internal/testenv"
 )
 
@@ -23,7 +23,7 @@ import (
 // streaming call stays bound by the same callTimeout.
 func tunnelCtx(t *testing.T, env *testenv.Env) context.Context {
 	t.Helper()
-	return callCtx(t, relay.AgentIDKey, env.AgentID)
+	return callCtx(t, wire.AgentIDKey, env.AgentID)
 }
 
 func TestServerStreamDeliversEveryMessageInOrder(t *testing.T) {
@@ -157,7 +157,7 @@ func TestAbortedServerStreamStopsTheAgentsLocalCall(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	ctx = metadata.AppendToOutgoingContext(ctx, relay.AgentIDKey, env.AgentID)
+	ctx = metadata.AppendToOutgoingContext(ctx, wire.AgentIDKey, env.AgentID)
 
 	stream, err := client.Tail(ctx, &demov1.TailRequest{Lines: 10_000_000})
 	if err != nil {
