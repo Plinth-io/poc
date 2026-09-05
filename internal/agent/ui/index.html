@@ -9,8 +9,8 @@
 </style>
 <h1>Agent {{.AgentID}}</h1>
 <table>
-  <tr><th>Verbindung</th><td>{{if .Connected}}verbunden seit {{.Since}}{{else}}getrennt{{end}}</td></tr>
-  <tr><th>Lokale Ziele</th><td>{{range .Targets}}{{.}}<br>{{end}}</td></tr>
+  <tr><th>Connection</th><td>{{if .Connected}}connected since {{.Since}}{{else}}disconnected{{end}}</td></tr>
+  <tr><th>Local targets</th><td>{{range .Targets}}{{.}}<br>{{end}}</td></tr>
 </table>
 <h2>Logs</h2>
 <div id="log">{{range .Lines}}{{.}}

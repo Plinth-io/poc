@@ -7,22 +7,22 @@
   th, td { text-align: left; padding: .25rem 1.5rem .25rem 0; border-bottom: 1px solid #eee; }
   #events { max-height: 60vh; overflow: auto; }
 </style>
-<h1>Verbundene Agents</h1>
+<h1>Connected agents</h1>
 <table>
-  <tr><th>ID</th><th>Version</th><th>Verbunden seit</th><th>Letzter Pong</th><th>Aktive Streams</th><th></th></tr>
+  <tr><th>ID</th><th>Version</th><th>Connected since</th><th>Last pong</th><th>Active streams</th><th></th></tr>
   {{range .Agents}}
   <tr>
     <td>{{.ID}}</td><td>{{.Version}}</td><td>{{.Since}}</td><td>{{.Pong}}</td><td>{{.Streams}}</td>
-    <td><a href="/a/{{.ID}}/">UI öffnen</a></td>
+    <td><a href="/a/{{.ID}}/">Open UI</a></td>
   </tr>
   {{else}}
-  <tr><td colspan="6">keine</td></tr>
+  <tr><td colspan="6">none</td></tr>
   {{end}}
 </table>
 
 <h2>Envelopes</h2>
 <table id="events">
-  <tr><th>Zeit</th><th>Agent</th><th>Richtung</th><th>Stream</th><th>Typ</th><th>Bytes</th></tr>
+  <tr><th>Time</th><th>Agent</th><th>Direction</th><th>Stream</th><th>Kind</th><th>Bytes</th></tr>
   <tbody id="rows">
     {{range .Events}}
     <tr>

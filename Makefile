@@ -8,7 +8,7 @@ test:
 
 demo:
 	@go build -o bin/ ./cmd/demo-service ./cmd/hub ./cmd/agent
-	@echo "drei Prozesse starten, mit Ctrl-C beenden"
+	@echo "starting three processes, stop with Ctrl-C"
 	@./bin/demo-service & \
 	 HUB_TOKENS=mac-1:secret1 ./bin/hub & \
 	 sleep 2; AGENT_TOKEN=secret1 ./bin/agent & \

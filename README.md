@@ -1,63 +1,60 @@
-# Tunnel-PoC
+# Tunnel PoC
 
-Ein Agent ohne eingehenden Listener wird über eine selbst aufgebaute
-WebSocket-Verbindung per gRPC steuerbar und macht seine lokale Web-UI durch
-denselben Kanal erreichbar.
+An agent with no inbound listener becomes controllable over gRPC through a
+WebSocket connection it opens itself, and makes its local web UI reachable
+through that same channel.
 
-## Starten
+## Running it
 
     make demo
 
-Das baut und startet alle drei Prozesse mit den Tokens aus dem Makefile.
-Wer `hub` und `agent` stattdessen direkt startet, braucht `HUB_TOKENS`
-(Format `id:token,id:token`, z.B. `mac-1:secret1`) beim Hub und den
-passenden `AGENT_TOKEN` beim Agent — ohne `HUB_TOKENS` beendet sich der Hub
-sofort mit `HUB_TOKENS is empty`.
+That builds and starts all three processes with the tokens from the Makefile.
+If you start `hub` and `agent` directly instead, the hub needs `HUB_TOKENS`
+(format `id:token,id:token`, e.g. `mac-1:secret1`) and the agent needs the
+matching `AGENT_TOKEN` — without `HUB_TOKENS` the hub exits immediately with
+`HUB_TOKENS is empty`.
 
-Danach:
+Then:
 
-- Hub-UI mit Agent-Liste und Envelope-Inspektor: <http://127.0.0.1:7001/>
-- Agent-UI durch den Tunnel: <http://127.0.0.1:7001/a/mac-1/>
-- gRPC durch den Tunnel:
+- Hub UI with the agent list and the envelope inspector: <http://127.0.0.1:7001/>
+- Agent UI through the tunnel: <http://127.0.0.1:7001/a/mac-1/>
+- gRPC through the tunnel:
 
       go tool grpcurl -plaintext -import-path proto -proto demo/v1/demo.proto \
         -H 'x-agent-id: mac-1' -d '{"text":"hallo"}' \
         127.0.0.1:7000 demo.v1.Demo/Echo
 
-`buf` und `grpcurl` hängen als go.mod-Tool-Abhängigkeiten im Modul und ziehen
-einen großen Satz indirekter Module nach sich. Gebraucht werden sie nur zum
-Generieren und für Aufrufe von Hand; der PoC selbst hat keine davon zur
-Laufzeit — und kein Docker.
+`buf` and `grpcurl` are go.mod tool dependencies and pull in a large set of
+indirect modules. They are needed only for code generation and for calls made
+by hand; the PoC itself uses neither at runtime — and no Docker.
 
-## Aufbau
+## How it is put together
 
-`internal/bus` trägt getaggte Envelopes mit `stream_id` über einen
-WebSocket und weiß nichts von gRPC oder HTTP. `internal/relay` sind seine
-beiden Nutzer. Der gRPC-Relay reicht rohe Message-Bytes durch, deshalb ist
-jeder gRPC-Dienst ohne Codeänderung tunnelbar.
+`internal/bus` carries tagged envelopes with a `stream_id` over one WebSocket
+and knows nothing about gRPC or HTTP. `internal/relay` holds its two users.
+The gRPC relay passes raw message bytes through, which is why any gRPC service
+is tunnelable without a code change.
 
-Design und bewusste Auslassungen:
+Design and deliberate omissions (in German):
 `docs/superpowers/specs/2026-09-04-grpc-over-websocket-tunnel-design.md`
 
-## Grenzen
+## Limits
 
-Die Aufrufer-Seite ist nicht authentifiziert: wer den Hub erreicht,
-erreicht jeden verbundenen Agent. Beide Hub-Listener binden deshalb per
-Default auf `127.0.0.1` (überschreibbar über `-grpc-addr`/`-http-addr`).
-Vor jedem Betrieb auf einer öffentlichen Adresse muss zuerst eine
-Authentifizierung der Aufrufer hinzukommen.
+Callers are not authenticated: whoever reaches the hub reaches every connected
+agent. Both hub listeners therefore bind to `127.0.0.1` by default (override
+with `-grpc-addr`/`-http-addr`). Caller authentication has to come first before
+this runs on a public address.
 
-Die Verbindung zwischen Agent und Hub ist unverschlüsselt: `-hub` zeigt per
-Default auf ein `ws://`-Ziel, und der Agent schickt sein
-`Authorization: Bearer <token>` samt allem Getunnelten im Klartext. Auf einen
-entfernten Hub zu zeigen ist ein Flag-Argument weit, also gehört vorher ein
-`wss://`-Endpunkt mit TLS davor.
+The connection between agent and hub is unencrypted: `-hub` points at a `ws://`
+target by default, and the agent sends its `Authorization: Bearer <token>` —
+along with everything tunnelled — in cleartext. Pointing it at a remote hub is
+one flag argument away, so a `wss://` endpoint with TLS belongs in front of that
+first.
 
-Der HTTP-Relay-Handler wartet auf das Ende des Anfragekörpers, bevor er
-zurückkehrt. Der Hub setzt dafür zwar `ReadTimeout`/`ReadHeaderTimeout` auf
-seinem `http.Server`, das begrenzt aber nur, wie lange ein einzelner
-Request insgesamt lesen darf — ein Aufrufer, der viele parallele Requests
-offen hält und jeweils knapp unter dem Timeout bleibt, kann trotzdem
-mehrere Handler-Goroutinen und Registry-Einträge gleichzeitig belegen.
-Umgekehrt kappt dasselbe `ReadTimeout` jeden getunnelten Upload nach 30 s,
-egal wie groß er ist.
+The HTTP relay handler waits for the request body to finish before it returns.
+The hub does set `ReadTimeout`/`ReadHeaderTimeout` on its `http.Server` for
+that, but those only bound how long a single request may spend reading — a
+caller holding many parallel requests open, each staying just under the timeout,
+can still occupy several handler goroutines and registry entries at once.
+Conversely, that same `ReadTimeout` cuts off every tunnelled upload after 30 s,
+however large it is.
